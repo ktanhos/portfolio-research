@@ -2035,22 +2035,135 @@ def build_company_table(tickers, prices, include_company, include_income):
 
 # ============================================================
 
-def format_money_vnd(x):
+def _format_number_vi(x, decimals=2, signed=False):
+    """Định dạng số theo quy ước hiển thị Việt Nam."""
     if pd.isna(x):
         return "N/A"
 
-    x = float(x)
+    value = float(x)
+    sign = "+" if signed and value > 0 else ""
 
-    if abs(x) >= 1e12:
-        return f"{x / 1e12:,.2f} nghìn tỷ"
+    formatted = f"{abs(value):,.{decimals}f}"
+    formatted = (
+        formatted
+        .replace(",", "_")
+        .replace(".", ",")
+        .replace("_", ".")
+    )
 
-    if abs(x) >= 1e9:
-        return f"{x / 1e9:,.2f} tỷ"
+    if value < 0:
+        return f"-{formatted}"
 
-    if abs(x) >= 1e6:
-        return f"{x / 1e6:,.0f} triệu"
+    return f"{sign}{formatted}"
 
-    return f"{x:,.0f} đồng"
+
+def format_decimal_vi2(x):
+    return _format_number_vi(x, 2)
+
+
+def format_decimal_vi3(x):
+    return _format_number_vi(x, 3)
+
+
+def format_decimal_vi4(x):
+    return _format_number_vi(x, 4)
+
+
+def format_decimal_vi4_signed(x):
+    return _format_number_vi(x, 4, signed=True)
+
+
+def format_percent_vi(x):
+    if pd.isna(x):
+        return "N/A"
+    return _format_number_vi(float(x) * 100, 2) + "%"
+
+
+def format_percent_vi_signed(x):
+    if pd.isna(x):
+        return "N/A"
+    return _format_number_vi(float(x) * 100, 2, signed=True) + "%"
+
+
+def format_money_vnd(x):
+    """
+    Hiển thị tiền Việt Nam theo quy ước:
+    1.234,56 tỷ
+    1,25 nghìn tỷ
+    850,00 triệu
+    125.000 đồng
+    """
+    if pd.isna(x):
+        return "N/A"
+
+    value = float(x)
+    absolute = abs(value)
+
+    if absolute >= 1e12:
+        return (
+            _format_number_vi(value / 1e12, 2)
+            + " nghìn tỷ"
+        )
+
+    if absolute >= 1e9:
+        return (
+            _format_number_vi(value / 1e9, 2)
+            + " tỷ"
+        )
+
+    if absolute >= 1e6:
+        return (
+            _format_number_vi(value / 1e6, 2)
+            + " triệu"
+        )
+
+    return (
+        _format_number_vi(value, 0)
+        + " đồng"
+    )
+
+
+def annotate_scatter_labels(
+    ax,
+    data,
+    x_column,
+    y_column,
+    label_column
+):
+    """
+    Gắn nhãn điểm với các vị trí lệch xen kẽ để hạn chế chồng nhãn.
+    Không thay đổi dữ liệu hay tọa độ điểm.
+    """
+    offsets = [
+        (8, 8),
+        (8, -12),
+        (-8, 8),
+        (-8, -12),
+        (14, 18),
+        (14, -22),
+        (-14, 18),
+        (-14, -22),
+    ]
+
+    for i, (_, row) in enumerate(data.iterrows()):
+        x = row[x_column]
+        y = row[y_column]
+        label = row[label_column]
+
+        if pd.isna(x) or pd.isna(y) or pd.isna(label):
+            continue
+
+        dx, dy = offsets[i % len(offsets)]
+
+        ax.annotate(
+            str(label),
+            (x, y),
+            xytext=(dx, dy),
+            textcoords="offset points",
+            ha="left" if dx >= 0 else "right",
+            va="bottom" if dy >= 0 else "top",
+            fontsize=9
+        )
 
 
 def format_company_table(df):
@@ -2074,10 +2187,18 @@ def format_company_table(df):
     )
 
     def fmt_num(x):
-        return f"{x:,.0f}" if pd.notna(x) else "N/A"
+        return (
+            _format_number_vi(x, 0)
+            if pd.notna(x)
+            else "N/A"
+        )
 
     def fmt_ratio(x):
-        return f"{x:.2f}" if pd.notna(x) else "N/A"
+        return (
+            _format_number_vi(x, 2)
+            if pd.notna(x)
+            else "N/A"
+        )
 
     def fmt_percent(x):
         if pd.isna(x):
@@ -3029,9 +3150,9 @@ def run_research(
 
     display(
         benchmark_summary.style.format({
-            "Lợi suất năm": "{:.2%}",
-            "Biến động năm": "{:.2%}",
-            "Sharpe": "{:.3f}"
+            "Lợi suất năm": format_percent_vi,
+            "Biến động năm": format_percent_vi,
+            "Sharpe": format_decimal_vi3
         })
     )
 
@@ -3048,18 +3169,18 @@ def run_research(
 
     display(
         asset_summary.style.format({
-            "Lợi suất năm": "{:.2%}",
-            "Biến động năm": "{:.2%}",
-            "Sharpe": "{:.3f}",
-            "Beta": "{:.3f}",
-            "Tương quan VNINDEX": "{:.3f}"
+            "Lợi suất năm": format_percent_vi,
+            "Biến động năm": format_percent_vi,
+            "Sharpe": format_decimal_vi3,
+            "Beta": format_decimal_vi3,
+            "Tương quan VNINDEX": format_decimal_vi3
         })
     )
 
     print("\nMA TRẬN TƯƠNG QUAN")
 
     display(
-        returns.corr().style.format("{:.3f}")
+        returns.corr().style.format(format_decimal_vi3)
     )
 
     # --------------------------------------------------------
@@ -3210,13 +3331,13 @@ def run_research(
 
             display(
                 _levered_table.style.format({
-                    "Tổng vị thế": "{:.2%}",
-                    "Vốn vay": "{:.2%}",
-                    "Lãi suất vay bình quân": "{:.2%}",
-                    "Chi phí vay": "{:.2%}",
-                    "Lợi suất": "{:.2%}",
-                    "Rủi ro": "{:.2%}",
-                    "Sharpe": "{:.3f}"
+                    "Tổng vị thế": format_percent_vi,
+                    "Vốn vay": format_percent_vi,
+                    "Lãi suất vay bình quân": format_percent_vi,
+                    "Chi phí vay": format_percent_vi,
+                    "Lợi suất": format_percent_vi,
+                    "Rủi ro": format_percent_vi,
+                    "Sharpe": format_decimal_vi3
                 })
             )
 
@@ -3257,13 +3378,13 @@ def run_research(
         if not _levered_alloc.empty:
 
             _fmt = {
-                _ticker: "{:.2%}"
+                _ticker: format_percent_vi
                 for _ticker in returns.columns
             }
 
             _fmt.update({
-                "Tổng vị thế": "{:.2%}",
-                "Vốn vay": "{:.2%}"
+                "Tổng vị thế": format_percent_vi,
+                "Vốn vay": format_percent_vi
             })
 
             display(
@@ -3299,10 +3420,10 @@ def run_research(
 
         display(
             target_summary.style.format({
-                "Mục tiêu": "{:.2%}",
-                "Lợi suất kỳ vọng": "{:.2%}",
-                "Rủi ro thấp nhất": "{:.2%}",
-                "Sharpe": "{:.3f}"
+                "Mục tiêu": format_percent_vi,
+                "Lợi suất kỳ vọng": format_percent_vi,
+                "Rủi ro thấp nhất": format_percent_vi,
+                "Sharpe": format_decimal_vi3
             })
         )
 
@@ -3331,17 +3452,17 @@ def run_research(
 
     display(
         target_check.style.format({
-            "Lợi suất kỳ vọng": "{:.2%}",
-            "Rủi ro": "{:.2%}",
-            "Sharpe": "{:.3f}",
-            "So với mục tiêu": "{:+.2%}"
+            "Lợi suất kỳ vọng": format_percent_vi,
+            "Rủi ro": format_percent_vi,
+            "Sharpe": format_decimal_vi3,
+            "So với mục tiêu": format_percent_vi_signed
         })
     )
 
     print("\nTỶ TRỌNG")
 
     display(
-        weights.style.format("{:.2%}")
+        weights.style.format(format_percent_vi)
     )
 
     # --------------------------------------------------------
@@ -3360,16 +3481,16 @@ def run_research(
 
     display(
         comparison.style.format({
-            "Lợi suất": "{:.2%}",
-            "Rủi ro": "{:.2%}",
-            "Sharpe": "{:.3f}",
-            "Max Drawdown": "{:.2%}",
-            "Alpha": "{:.2%}",
-            "Beta": "{:.3f}",
-            "Tương quan": "{:.3f}",
-            "Tracking Error": "{:.2%}",
-            "Information Ratio": "{:.3f}",
-            "Vượt VNINDEX": "{:.2%}"
+            "Lợi suất": format_percent_vi,
+            "Rủi ro": format_percent_vi,
+            "Sharpe": format_decimal_vi3,
+            "Max Drawdown": format_percent_vi,
+            "Alpha": format_percent_vi,
+            "Beta": format_decimal_vi3,
+            "Tương quan": format_decimal_vi3,
+            "Tracking Error": format_percent_vi,
+            "Information Ratio": format_decimal_vi3,
+            "Vượt VNINDEX": format_percent_vi
         })
     )
 
@@ -3496,16 +3617,13 @@ def run_research(
         s=110
     )
 
-    for _, row in plot_df.iterrows():
-        plt.annotate(
-            row["Danh mục"],
-            (
-                row["Rủi ro"] * 100,
-                row["Lợi suất"] * 100
-            ),
-            xytext=(8, 6),
-            textcoords="offset points"
-        )
+    annotate_scatter_labels(
+        plt.gca(),
+        plot_df,
+        "Rủi ro",
+        "Lợi suất",
+        "Danh mục"
+    )
 
     plt.axhline(
         target_return * 100,
@@ -3829,8 +3947,9 @@ def run_research(
                     stats["volatility"] * 100,
                     stats["return"] * 100
                 ),
-                xytext=(7, 5),
-                textcoords="offset points"
+                xytext=(8, 8),
+                textcoords="offset points",
+                fontsize=9
             )
 
         # Điểm Target Return được đánh dấu riêng.
@@ -3888,11 +4007,11 @@ def run_research(
 
     display(
         target_analysis.style.format({
-            "Lợi suất kỳ vọng": "{:.2%}",
-            "Mục tiêu": "{:.2%}",
-            "Chênh lệch": "{:+.2%}",
-            "Rủi ro": "{:.2%}",
-            "Sharpe": "{:.3f}"
+            "Lợi suất kỳ vọng": format_percent_vi,
+            "Mục tiêu": format_percent_vi,
+            "Chênh lệch": format_percent_vi_signed,
+            "Rủi ro": format_percent_vi,
+            "Sharpe": format_decimal_vi3
         })
     )
 
@@ -3943,10 +4062,10 @@ def run_research(
 
     display(
         sensitivity.style.format({
-            "Mục tiêu": "{:.2%}",
-            "Lợi suất": "{:.2%}",
-            "Rủi ro tối thiểu": "{:.2%}",
-            "Sharpe": "{:.3f}"
+            "Mục tiêu": format_percent_vi,
+            "Lợi suất": format_percent_vi,
+            "Rủi ro tối thiểu": format_percent_vi,
+            "Sharpe": format_decimal_vi3
         })
     )
 
@@ -4008,10 +4127,10 @@ def run_research(
 
     display(
         attainment_table.style.format({
-            "Tỷ lệ đạt mục tiêu": "{:.2%}",
-            "Lợi suất cuộn thấp nhất": "{:.2%}",
-            "Lợi suất cuộn trung vị": "{:.2%}",
-            "Lợi suất cuộn cao nhất": "{:.2%}"
+            "Tỷ lệ đạt mục tiêu": format_percent_vi,
+            "Lợi suất cuộn thấp nhất": format_percent_vi,
+            "Lợi suất cuộn trung vị": format_percent_vi,
+            "Lợi suất cuộn cao nhất": format_percent_vi
         })
     )
 
@@ -4026,10 +4145,10 @@ def run_research(
 
     display(
         concentration.style.format({
-            "HHI": "{:.3f}",
-            "Số tài sản hiệu dụng": "{:.2f}",
-            "Số tài sản hiệu dụng theo |w|": "{:.2f}",
-            "Tỷ trọng lớn nhất": "{:.2%}"
+            "HHI": format_decimal_vi3,
+            "Số tài sản hiệu dụng": format_decimal_vi2,
+            "Số tài sản hiệu dụng theo |w|": format_decimal_vi2,
+            "Tỷ trọng lớn nhất": format_percent_vi
         })
     )
 
@@ -4051,11 +4170,11 @@ def run_research(
 
     display(
         risk_diagnostics.style.format({
-            "Max Drawdown": "{:.2%}",
-            "Tỷ lệ đạt mục tiêu": "{:.2%}",
-            "Rolling 12T thấp nhất": "{:.2%}",
-            "Rolling 12T trung vị": "{:.2%}",
-            "Rolling 12T cao nhất": "{:.2%}"
+            "Max Drawdown": format_percent_vi,
+            "Tỷ lệ đạt mục tiêu": format_percent_vi,
+            "Rolling 12T thấp nhất": format_percent_vi,
+            "Rolling 12T trung vị": format_percent_vi,
+            "Rolling 12T cao nhất": format_percent_vi
         })
     )
 
@@ -4073,12 +4192,12 @@ def run_research(
 
     display(
         conclusion.style.format({
-            "Mục tiêu": "{:.2%}",
-            "Lợi suất kỳ vọng": "{:.2%}",
-            "Chênh lệch mục tiêu": "{:+.2%}",
-            "Rủi ro": "{:.2%}",
-            "Sharpe": "{:.3f}",
-            "Điểm tham khảo": "{:.3f}"
+            "Mục tiêu": format_percent_vi,
+            "Lợi suất kỳ vọng": format_percent_vi,
+            "Chênh lệch mục tiêu": format_percent_vi_signed,
+            "Rủi ro": format_percent_vi,
+            "Sharpe": format_decimal_vi3,
+            "Điểm tham khảo": format_decimal_vi3
         })
     )
 
@@ -4103,8 +4222,9 @@ def run_research(
                 row["Rủi ro"] * 100,
                 row["Lợi suất kỳ vọng"] * 100
             ),
-            xytext=(7, 5),
-            textcoords="offset points"
+            xytext=(8, 8),
+            textcoords="offset points",
+            fontsize=9
         )
 
     plt.axhline(
@@ -4121,6 +4241,18 @@ def run_research(
     plt.grid(alpha=0.25)
     plt.tight_layout()
     plt.show()
+
+    # --------------------------------------------------------
+    # 19. PHÂN TÍCH NÂNG CAO
+    # --------------------------------------------------------
+    advanced_analysis = run_advanced_analysis(
+        main_portfolio_results=main_portfolio_results,
+        returns=returns,
+        benchmark_returns=benchmark_returns,
+        weights=weights,
+        target_return=target_return,
+        risk_free_rate=risk_free_rate
+    )
 
     print("\nHOÀN TẤT PHÂN TÍCH.")
 
@@ -4165,7 +4297,8 @@ def run_research(
         "target_check": target_check,
         "leveraged_results": leveraged_results,
         "levered_table": _levered_table,
-        "levered_alloc": _levered_alloc
+        "levered_alloc": _levered_alloc,
+        "advanced_analysis": advanced_analysis
     }
 
 # ============================================================
@@ -4531,9 +4664,9 @@ def advanced_risk_table(
                 downside["Downside Deviation"],
             "Tỷ lệ kỳ âm":
                 downside["Tỷ lệ kỳ âm"],
-            "VaR 95%":
+            "VaR 95% theo tuần":
                 risk_tail["VaR"],
-            "CVaR 95%":
+            "CVaR 95% theo tuần":
                 risk_tail["CVaR"],
             "Số quan sát đuôi":
                 risk_tail["Số quan sát đuôi"]
@@ -5076,439 +5209,467 @@ def all_risk_contribution_tables(
 # 19.13. CHẠY PHÂN TÍCH NÂNG CAO
 # ============================================================
 
-print("\n")
-print("=" * 70)
-print("19. PHÂN TÍCH NÂNG CAO DANH MỤC")
-print("=" * 70)
-
-
-# ============================================================
-# 19A. HỒ SƠ RỦI RO
-# ============================================================
-
-print("\n19A. HỒ SƠ RỦI RO NÂNG CAO")
-
-advanced_risk = advanced_risk_table(
+def run_advanced_analysis(
     main_portfolio_results,
     returns,
     benchmark_returns,
+    weights,
+    target_return,
     risk_free_rate
-)
+):
+    """
+    Chạy toàn bộ lớp phân tích nâng cao sau khi đã tối ưu danh mục.
 
-display(
-    advanced_risk.style.format({
-        "Lợi suất năm": "{:.2%}",
-        "Biến động năm": "{:.2%}",
-        "Sortino": "{:.3f}",
-        "Downside Deviation": "{:.2%}",
-        "Tỷ lệ kỳ âm": "{:.2%}",
-        "VaR 95%": "{:.2%}",
-        "CVaR 95%": "{:.2%}"
-    })
-)
+    Quan trọng:
+    Hàm này phải được gọi bên trong run_research sau khi
+    main_portfolio_results, returns và các biến đầu vào đã tồn tại.
+    Không thực hiện gọi API và không thay đổi kết quả tối ưu.
+    """
+    print("\n")
+    print("=" * 70)
+    print("19. PHÂN TÍCH NÂNG CAO DANH MỤC")
+    print("=" * 70)
 
 
-# ============================================================
-# 19B. PHÂN RÃ LỢI NHUẬN
-# ============================================================
+    # ============================================================
+    # 19A. HỒ SƠ RỦI RO
+    # ============================================================
 
-print("\n19B. PHÂN RÃ LỢI NHUẬN")
+    print("\n19A. HỒ SƠ RỦI RO NÂNG CAO")
 
-return_contributions = (
-    all_return_contribution_tables(
+    advanced_risk = advanced_risk_table(
         main_portfolio_results,
-        returns
+        returns,
+        benchmark_returns,
+        risk_free_rate
     )
-)
-
-for name, table in return_contributions.items():
-
-    print(f"\nDanh mục: {name}")
 
     display(
-        table.style.format({
-            "Tỷ trọng": "{:.2%}",
-            "Lợi suất năm": "{:.2%}",
-            "Đóng góp lợi nhuận": "{:.2%}",
-            "Tỷ lệ đóng góp": "{:.2%}"
+        advanced_risk.style.format({
+            "Lợi suất năm": format_percent_vi,
+            "Biến động năm": format_percent_vi,
+            "Sortino": format_decimal_vi3,
+            "Downside Deviation": format_percent_vi,
+            "Tỷ lệ kỳ âm": format_percent_vi,
+            "VaR 95% theo tuần": format_percent_vi,
+            "CVaR 95% theo tuần": format_percent_vi
         })
     )
 
 
-# ============================================================
-# 19C. PHÂN RÃ RỦI RO
-# ============================================================
+    # ============================================================
+    # 19B. PHÂN RÃ LỢI NHUẬN
+    # ============================================================
 
-print("\n19C. PHÂN RÃ RỦI RO")
+    print("\n19B. PHÂN RÃ LỢI NHUẬN")
 
-risk_contributions = (
-    all_risk_contribution_tables(
-        main_portfolio_results,
-        returns
+    return_contributions = (
+        all_return_contribution_tables(
+            main_portfolio_results,
+            returns
+        )
     )
-)
 
-for name, table in risk_contributions.items():
+    for name, table in return_contributions.items():
 
-    print(f"\nDanh mục: {name}")
+        print(f"\nDanh mục: {name}")
+
+        display(
+            table.style.format({
+                "Tỷ trọng": format_percent_vi,
+                "Lợi suất năm": format_percent_vi,
+                "Đóng góp lợi nhuận": format_percent_vi,
+                "Tỷ lệ đóng góp": format_percent_vi
+            })
+        )
+
+
+    # ============================================================
+    # 19C. PHÂN RÃ RỦI RO
+    # ============================================================
+
+    print("\n19C. PHÂN RÃ RỦI RO")
+
+    risk_contributions = (
+        all_risk_contribution_tables(
+            main_portfolio_results,
+            returns
+        )
+    )
+
+    for name, table in risk_contributions.items():
+
+        print(f"\nDanh mục: {name}")
+
+        display(
+            table.style.format({
+                "Tỷ trọng": format_percent_vi,
+                "Rủi ro biên": format_percent_vi,
+                "Đóng góp rủi ro": format_percent_vi,
+                "Tỷ lệ đóng góp rủi ro": format_percent_vi
+            })
+        )
+
+
+    # ============================================================
+    # 19D. INCREMENTAL RISK
+    # ============================================================
+
+    print("\n19D. INCREMENTAL RISK")
+
+    incremental_tables = {}
+
+    for name, item in main_portfolio_results.items():
+
+        if item[0] is None:
+            continue
+
+        incremental = incremental_risk_table(
+            item[0],
+            returns,
+            risk_free_rate,
+            step=0.01
+        )
+
+        incremental_tables[name] = incremental
+
+        print(
+            f"\nDanh mục: {name}"
+        )
+
+        display(
+            incremental.style.format({
+                "Tỷ trọng hiện tại": format_percent_vi,
+                "Tăng thêm": format_percent_vi,
+                "Thay đổi lợi nhuận": format_percent_vi_signed,
+                "Thay đổi rủi ro": format_percent_vi_signed,
+                "Thay đổi Sharpe": format_decimal_vi4_signed,
+                "Rủi ro mới": format_percent_vi
+            })
+        )
+
+
+    # ============================================================
+    # 19E. STRESS TEST THỊ TRƯỜNG
+    # ============================================================
+
+    print("\n19E. STRESS TEST THEO VNINDEX")
+
+    stress_market = market_stress_test(
+        main_portfolio_results,
+        returns,
+        benchmark_returns
+    )
 
     display(
-        table.style.format({
-            "Tỷ trọng": "{:.2%}",
-            "Rủi ro biên": "{:.4f}",
-            "Đóng góp rủi ro": "{:.2%}",
-            "Tỷ lệ đóng góp rủi ro": "{:.2%}"
+        stress_market.style.format({
+            "Beta": format_decimal_vi3,
+            "Cú sốc VNINDEX": format_percent_vi_signed,
+            "Lợi suất danh mục ước tính":
+                format_percent_vi_signed
         })
     )
 
 
-# ============================================================
-# 19D. INCREMENTAL RISK
-# ============================================================
+    # ============================================================
+    # 19F. STRESS TEST CỔ PHIẾU
+    # ============================================================
 
-print("\n19D. INCREMENTAL RISK")
+    print("\n19F. STRESS TEST TỪNG CỔ PHIẾU")
 
-incremental_tables = {}
+    asset_stress_tables = {}
 
-for name, item in main_portfolio_results.items():
+    for name, item in main_portfolio_results.items():
 
-    if item[0] is None:
-        continue
+        if item[0] is None:
+            continue
 
-    incremental = incremental_risk_table(
-        item[0],
+        stress_asset = named_asset_stress_test(
+            item[0],
+            returns,
+            shock=-0.20
+        )
+
+        asset_stress_tables[name] = stress_asset
+
+        print(
+            f"\nDanh mục: {name}"
+        )
+
+        display(
+            stress_asset.style.format({
+                "Tỷ trọng": format_percent_vi,
+                "Cú sốc": format_percent_vi_signed,
+                "Tác động danh mục":
+                    format_percent_vi_signed
+            })
+        )
+
+
+    # ============================================================
+    # 19G. REVERSE STRESS TEST
+    # ============================================================
+
+    print("\n19G. REVERSE STRESS TEST")
+
+    reverse_stress_tables = {}
+
+    for name, item in main_portfolio_results.items():
+
+        if item[0] is None:
+            continue
+
+        reverse = reverse_stress_test(
+            item[0],
+            returns,
+            target_loss=-0.20
+        )
+
+        reverse_stress_tables[name] = reverse
+
+        print(
+            f"\nDanh mục: {name}"
+        )
+
+        display(
+            reverse.style.format({
+                "Tỷ trọng": format_percent_vi,
+                "Mức lỗ danh mục mục tiêu":
+                    format_percent_vi,
+                "Cú sốc riêng cần thiết":
+                    format_percent_vi_signed
+            })
+        )
+
+
+    # ============================================================
+    # 19H. ĐỘ ỔN ĐỊNH THEO THỜI GIAN
+    # ============================================================
+
+    print("\n19H. PHÂN TÍCH ĐỘ ỔN ĐỊNH")
+
+    stability = stability_summary(
+        main_portfolio_results,
         returns,
         risk_free_rate,
-        step=0.01
-    )
-
-    incremental_tables[name] = incremental
-
-    print(
-        f"\nDanh mục: {name}"
+        window=52
     )
 
     display(
-        incremental.style.format({
-            "Tỷ trọng hiện tại": "{:.2%}",
-            "Tăng thêm": "{:.2%}",
-            "Thay đổi lợi nhuận": "{:+.2%}",
-            "Thay đổi rủi ro": "{:+.2%}",
-            "Thay đổi Sharpe": "{:+.4f}",
-            "Rủi ro mới": "{:.2%}"
+        stability.style.format({
+            "Rolling Return thấp nhất":
+                format_percent_vi,
+            "Rolling Return trung vị":
+                format_percent_vi,
+            "Rolling Return cao nhất":
+                format_percent_vi,
+            "Rolling Volatility thấp nhất":
+                format_percent_vi,
+            "Rolling Volatility cao nhất":
+                format_percent_vi,
+            "Rolling Sharpe thấp nhất":
+                format_decimal_vi3,
+            "Rolling Sharpe trung vị":
+                format_decimal_vi3,
+            "Rolling Sharpe cao nhất":
+                format_decimal_vi3,
+            "Tỷ lệ Rolling Sharpe dương":
+                format_percent_vi
         })
     )
 
 
-# ============================================================
-# 19E. STRESS TEST THỊ TRƯỜNG
-# ============================================================
+    # ============================================================
+    # 19I. BIỂU ĐỒ ROLLING SHARPE
+    # ============================================================
 
-print("\n19E. STRESS TEST THEO VNINDEX")
+    print("\n19I. BIỂU ĐỒ ROLLING SHARPE")
 
-stress_market = market_stress_test(
-    main_portfolio_results,
-    returns,
-    benchmark_returns
-)
+    for name, item in main_portfolio_results.items():
 
-display(
-    stress_market.style.format({
-        "Beta": "{:.3f}",
-        "Cú sốc VNINDEX": "{:+.2%}",
-        "Lợi suất danh mục ước tính":
-            "{:+.2%}"
-    })
-)
+        if item[0] is None:
+            continue
 
-
-# ============================================================
-# 19F. STRESS TEST CỔ PHIẾU
-# ============================================================
-
-print("\n19F. STRESS TEST TỪNG CỔ PHIẾU")
-
-asset_stress_tables = {}
-
-for name, item in main_portfolio_results.items():
-
-    if item[0] is None:
-        continue
-
-    stress_asset = named_asset_stress_test(
-        item[0],
-        returns,
-        shock=-0.20
-    )
-
-    asset_stress_tables[name] = stress_asset
-
-    print(
-        f"\nDanh mục: {name}"
-    )
-
-    display(
-        stress_asset.style.format({
-            "Tỷ trọng": "{:.2%}",
-            "Cú sốc": "{:+.2%}",
-            "Tác động danh mục":
-                "{:+.2%}"
-        })
-    )
-
-
-# ============================================================
-# 19G. REVERSE STRESS TEST
-# ============================================================
-
-print("\n19G. REVERSE STRESS TEST")
-
-reverse_stress_tables = {}
-
-for name, item in main_portfolio_results.items():
-
-    if item[0] is None:
-        continue
-
-    reverse = reverse_stress_test(
-        item[0],
-        returns,
-        target_loss=-0.20
-    )
-
-    reverse_stress_tables[name] = reverse
-
-    print(
-        f"\nDanh mục: {name}"
-    )
-
-    display(
-        reverse.style.format({
-            "Tỷ trọng": "{:.2%}",
-            "Mức lỗ danh mục mục tiêu":
-                "{:.2%}",
-            "Cú sốc riêng cần thiết":
-                "{:+.2%}"
-        })
-    )
-
-
-# ============================================================
-# 19H. ĐỘ ỔN ĐỊNH THEO THỜI GIAN
-# ============================================================
-
-print("\n19H. PHÂN TÍCH ĐỘ ỔN ĐỊNH")
-
-stability = stability_summary(
-    main_portfolio_results,
-    returns,
-    risk_free_rate,
-    window=52
-)
-
-display(
-    stability.style.format({
-        "Rolling Return thấp nhất":
-            "{:.2%}",
-        "Rolling Return trung vị":
-            "{:.2%}",
-        "Rolling Return cao nhất":
-            "{:.2%}",
-        "Rolling Volatility thấp nhất":
-            "{:.2%}",
-        "Rolling Volatility cao nhất":
-            "{:.2%}",
-        "Rolling Sharpe thấp nhất":
-            "{:.3f}",
-        "Rolling Sharpe trung vị":
-            "{:.3f}",
-        "Rolling Sharpe cao nhất":
-            "{:.3f}",
-        "Tỷ lệ Rolling Sharpe dương":
-            "{:.2%}"
-    })
-)
-
-
-# ============================================================
-# 19I. BIỂU ĐỒ ROLLING SHARPE
-# ============================================================
-
-print("\n19I. BIỂU ĐỒ ROLLING SHARPE")
-
-for name, item in main_portfolio_results.items():
-
-    if item[0] is None:
-        continue
-
-    portfolio_returns = get_portfolio_returns(
-        item,
-        returns
-    )
-
-    rolling = rolling_portfolio_statistics(
-        portfolio_returns,
-        window=52,
-        risk_free_rate=risk_free_rate
-    )
-
-    if rolling.empty:
-        continue
-
-    plt.figure(figsize=(12, 5))
-
-    plt.plot(
-        rolling.index,
-        rolling["Rolling Sharpe"],
-        linewidth=1.5
-    )
-
-    plt.axhline(
-        0,
-        linestyle="--",
-        linewidth=1
-    )
-
-    plt.title(
-        f"Rolling Sharpe 52 kỳ — {name}"
-    )
-
-    plt.xlabel("Thời gian")
-    plt.ylabel("Sharpe")
-
-    plt.grid(
-        alpha=0.25
-    )
-
-    plt.tight_layout()
-    plt.show()
-
-
-# ============================================================
-# 19J. BIỂU ĐỒ ĐÓNG GÓP RỦI RO
-# ============================================================
-
-print("\n19J. BIỂU ĐỒ ĐÓNG GÓP RỦI RO")
-
-for name, table in risk_contributions.items():
-
-    if table.empty:
-        continue
-
-    plot_data = (
-        table["Tỷ lệ đóng góp rủi ro"]
-        .sort_values()
-    )
-
-    plt.figure(figsize=(10, 6))
-
-    plot_data.plot(
-        kind="barh"
-    )
-
-    plt.title(
-        f"Đóng góp rủi ro — {name}"
-    )
-
-    plt.xlabel(
-        "Tỷ lệ đóng góp rủi ro"
-    )
-
-    plt.ylabel(
-        "Cổ phiếu"
-    )
-
-    plt.grid(
-        axis="x",
-        alpha=0.25
-    )
-
-    plt.tight_layout()
-    plt.show()
-
-
-# ============================================================
-# 19K. CẢNH BÁO RỦI RO NÂNG CAO
-# ============================================================
-
-print("\n19K. CẢNH BÁO QUẢN TRỊ")
-
-warning_rows = []
-
-for _, row in advanced_risk.iterrows():
-
-    warnings_list = []
-
-    if pd.notna(row["CVaR 95%"]):
-        if row["CVaR 95%"] > 0.08:
-            warnings_list.append(
-                "CVaR cao"
-            )
-
-    if pd.notna(row["Downside Deviation"]):
-        if row["Downside Deviation"] > 0.20:
-            warnings_list.append(
-                "Rủi ro phía giảm cao"
-            )
-
-    if pd.notna(row["Tỷ lệ kỳ âm"]):
-        if row["Tỷ lệ kỳ âm"] > 0.50:
-            warnings_list.append(
-                "Tần suất kỳ âm cao"
-            )
-
-    stability_row = stability[
-        stability["Danh mục"]
-        == row["Danh mục"]
-    ]
-
-    if not stability_row.empty:
-
-        rolling_sharpe_min = (
-            stability_row.iloc[0]
-            ["Rolling Sharpe thấp nhất"]
+        portfolio_returns = get_portfolio_returns(
+            item,
+            returns
         )
 
-        if pd.notna(rolling_sharpe_min):
-            if rolling_sharpe_min < -1:
+        rolling = rolling_portfolio_statistics(
+            portfolio_returns,
+            window=52,
+            risk_free_rate=risk_free_rate
+        )
+
+        if rolling.empty:
+            continue
+
+        plt.figure(figsize=(12, 5))
+
+        plt.plot(
+            rolling.index,
+            rolling["Rolling Sharpe"],
+            linewidth=1.5
+        )
+
+        plt.axhline(
+            0,
+            linestyle="--",
+            linewidth=1
+        )
+
+        plt.title(
+            f"Rolling Sharpe 52 kỳ — {name}"
+        )
+
+        plt.xlabel("Thời gian")
+        plt.ylabel("Sharpe")
+
+        plt.grid(
+            alpha=0.25
+        )
+
+        plt.tight_layout()
+        plt.show()
+
+
+    # ============================================================
+    # 19J. BIỂU ĐỒ ĐÓNG GÓP RỦI RO
+    # ============================================================
+
+    print("\n19J. BIỂU ĐỒ ĐÓNG GÓP RỦI RO")
+
+    for name, table in risk_contributions.items():
+
+        if table.empty:
+            continue
+
+        plot_data = (
+            table["Tỷ lệ đóng góp rủi ro"]
+            .sort_values()
+        )
+
+        plt.figure(figsize=(10, 6))
+
+        plot_data.plot(
+            kind="barh"
+        )
+
+        plt.title(
+            f"Đóng góp rủi ro — {name}"
+        )
+
+        plt.xlabel(
+            "Tỷ lệ đóng góp rủi ro"
+        )
+
+        plt.ylabel(
+            "Cổ phiếu"
+        )
+
+        plt.grid(
+            axis="x",
+            alpha=0.25
+        )
+
+        plt.tight_layout()
+        plt.show()
+
+
+    # ============================================================
+    # 19K. CẢNH BÁO RỦI RO NÂNG CAO
+    # ============================================================
+
+    print("\n19K. CẢNH BÁO QUẢN TRỊ")
+
+    warning_rows = []
+
+    for _, row in advanced_risk.iterrows():
+
+        warnings_list = []
+
+        if pd.notna(row["CVaR 95% theo tuần"]):
+            if row["CVaR 95% theo tuần"] > 0.08:
                 warnings_list.append(
-                    "Rolling Sharpe từng rất yếu"
+                    "CVaR cao"
                 )
 
-    if not warnings_list:
-        warning_text = (
-            "Chưa phát hiện cảnh báo chính"
-        )
-    else:
-        warning_text = "; ".join(
-            warnings_list
-        )
+        if pd.notna(row["Downside Deviation"]):
+            if row["Downside Deviation"] > 0.20:
+                warnings_list.append(
+                    "Rủi ro phía giảm cao"
+                )
 
-    warning_rows.append({
-        "Danh mục": row["Danh mục"],
-        "CVaR 95%": row["CVaR 95%"],
-        "Downside Deviation":
-            row["Downside Deviation"],
-        "Tỷ lệ kỳ âm":
-            row["Tỷ lệ kỳ âm"],
-        "Cảnh báo":
-            warning_text
-    })
+        if pd.notna(row["Tỷ lệ kỳ âm"]):
+            if row["Tỷ lệ kỳ âm"] > 0.50:
+                warnings_list.append(
+                    "Tần suất kỳ âm cao"
+                )
 
-advanced_warnings = pd.DataFrame(
-    warning_rows
-)
+        stability_row = stability[
+            stability["Danh mục"]
+            == row["Danh mục"]
+        ]
 
-display(
-    advanced_warnings.style.format({
-        "CVaR 95%": "{:.2%}",
-        "Downside Deviation": "{:.2%}",
-        "Tỷ lệ kỳ âm": "{:.2%}"
-    })
-)
+        if not stability_row.empty:
+
+            rolling_sharpe_min = (
+                stability_row.iloc[0]
+                ["Rolling Sharpe thấp nhất"]
+            )
+
+            if pd.notna(rolling_sharpe_min):
+                if rolling_sharpe_min < -1:
+                    warnings_list.append(
+                        "Rolling Sharpe từng rất yếu"
+                    )
+
+        if not warnings_list:
+            warning_text = (
+                "Chưa phát hiện cảnh báo chính"
+            )
+        else:
+            warning_text = "; ".join(
+                warnings_list
+            )
+
+        warning_rows.append({
+            "Danh mục": row["Danh mục"],
+            "CVaR 95% theo tuần": row["CVaR 95% theo tuần"],
+            "Downside Deviation":
+                row["Downside Deviation"],
+            "Tỷ lệ kỳ âm":
+                row["Tỷ lệ kỳ âm"],
+            "Cảnh báo":
+                warning_text
+        })
+
+    advanced_warnings = pd.DataFrame(
+        warning_rows
+    )
+
+    display(
+        advanced_warnings.style.format({
+            "CVaR 95% theo tuần": format_percent_vi,
+            "Downside Deviation": format_percent_vi,
+            "Tỷ lệ kỳ âm": format_percent_vi
+        })
+    )
 
 
-print("\n")
-print("=" * 70)
-print("HOÀN TẤT PHÂN TÍCH NÂNG CAO")
-print("=" * 70)
+    print("\n")
+    print("=" * 70)
+    print("HOÀN TẤT PHÂN TÍCH NÂNG CAO")
+    print("=" * 70)
+
+    return {
+        "advanced_risk": advanced_risk,
+        "return_contributions": return_contributions,
+        "risk_contributions": risk_contributions,
+        "incremental_tables": incremental_tables,
+        "stress_market": stress_market,
+        "asset_stress_tables": asset_stress_tables,
+        "reverse_stress_tables": reverse_stress_tables,
+        "stability": stability,
+        "advanced_warnings": advanced_warnings
+    }
