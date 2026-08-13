@@ -4169,4 +4169,1346 @@ def run_research(
     }
 
 # ============================================================
+# ============================================================
+# 19. PHÂN TÍCH NÂNG CAO DANH MỤC
+# ============================================================
+#
+# Module này sử dụng trực tiếp các biến đã có trong v22:
+#
+# returns
+# benchmark_returns
+# main_portfolio_results
+# weights
+# target_return
+# risk_free_rate
+# PERIODS_PER_YEAR
+#
+# Không lấy dữ liệu mới từ Vnstock.
+# Không thay đổi kết quả tối ưu danh mục.
+# ============================================================
 
+
+# ============================================================
+# 19.1. HÀM CHUẨN HÓA DỮ LIỆU
+# ============================================================
+
+def get_portfolio_returns(
+    portfolio_item,
+    returns
+):
+    """
+    Tính chuỗi lợi suất của một danh mục.
+    """
+
+    if portfolio_item is None:
+        return pd.Series(dtype=float)
+
+    portfolio_weights = portfolio_item[0]
+
+    if portfolio_weights is None:
+        return pd.Series(dtype=float)
+
+    portfolio_weights = np.asarray(
+        portfolio_weights,
+        dtype=float
+    )
+
+    return (
+        returns
+        .mul(portfolio_weights, axis=1)
+        .sum(axis=1)
+        .dropna()
+    )
+
+
+def annualized_return(
+    portfolio_returns
+):
+    if portfolio_returns.empty:
+        return np.nan
+
+    return (
+        portfolio_returns.mean()
+        * PERIODS_PER_YEAR
+    )
+
+
+def annualized_volatility(
+    portfolio_returns
+):
+    if portfolio_returns.empty:
+        return np.nan
+
+    return (
+        portfolio_returns.std()
+        * np.sqrt(PERIODS_PER_YEAR)
+    )
+
+
+# ============================================================
+# 19.2. PHÂN RÃ LỢI NHUẬN
+# ============================================================
+
+def return_contribution_table(
+    weights_vector,
+    returns
+):
+    """
+    Đóng góp lợi nhuận của từng cổ phiếu.
+
+    Contribution_i =
+    Weight_i x Annualized Return_i
+    """
+
+    if weights_vector is None:
+        return pd.DataFrame()
+
+    w = pd.Series(
+        np.asarray(weights_vector, dtype=float),
+        index=returns.columns
+    )
+
+    asset_return = (
+        returns.mean()
+        * PERIODS_PER_YEAR
+    )
+
+    contribution = (
+        w * asset_return
+    )
+
+    result = pd.DataFrame({
+        "Tỷ trọng": w,
+        "Lợi suất năm": asset_return,
+        "Đóng góp lợi nhuận": contribution
+    })
+
+    result["Tỷ lệ đóng góp"] = (
+        contribution
+        / contribution.sum()
+        if contribution.sum() != 0
+        else np.nan
+    )
+
+    result = result.sort_values(
+        "Đóng góp lợi nhuận",
+        ascending=False
+    )
+
+    return result
+
+
+# ============================================================
+# 19.3. PHÂN RÃ RỦI RO
+# ============================================================
+
+def risk_contribution_table(
+    weights_vector,
+    returns
+):
+    """
+    Phân rã độ biến động danh mục.
+
+    MRC_i =
+    Covariance_i / Portfolio Volatility
+
+    RC_i =
+    Weight_i x MRC_i
+
+    Risk Contribution_i =
+    RC_i / Portfolio Volatility
+    """
+
+    if weights_vector is None:
+        return pd.DataFrame()
+
+    w = pd.Series(
+        np.asarray(weights_vector, dtype=float),
+        index=returns.columns
+    )
+
+    covariance = returns.cov() * PERIODS_PER_YEAR
+
+    portfolio_variance = (
+        w.values
+        @ covariance.values
+        @ w.values
+    )
+
+    if portfolio_variance <= 0:
+        return pd.DataFrame()
+
+    portfolio_volatility = np.sqrt(
+        portfolio_variance
+    )
+
+    marginal_risk = (
+        covariance
+        @ w
+    ) / portfolio_volatility
+
+    risk_contribution = (
+        w * marginal_risk
+    )
+
+    percentage_contribution = (
+        risk_contribution
+        / portfolio_volatility
+    )
+
+    result = pd.DataFrame({
+        "Tỷ trọng": w,
+        "Rủi ro biên": marginal_risk,
+        "Đóng góp rủi ro": risk_contribution,
+        "Tỷ lệ đóng góp rủi ro": percentage_contribution
+    })
+
+    result = result.sort_values(
+        "Tỷ lệ đóng góp rủi ro",
+        ascending=False
+    )
+
+    return result
+
+
+# ============================================================
+# 19.4. DOWNSIDE RISK
+# ============================================================
+
+def downside_statistics(
+    portfolio_returns,
+    risk_free_rate
+):
+    """
+    Sortino và Downside Deviation.
+
+    Ngưỡng downside được quy đổi từ
+    lãi suất phi rủi ro năm sang kỳ phân tích.
+    """
+
+    if portfolio_returns.empty:
+        return {
+            "Sortino": np.nan,
+            "Downside Deviation": np.nan,
+            "Tỷ lệ kỳ âm": np.nan
+        }
+
+    periodic_rf = (
+        1 + risk_free_rate
+    ) ** (
+        1 / PERIODS_PER_YEAR
+    ) - 1
+
+    downside = np.minimum(
+        portfolio_returns - periodic_rf,
+        0
+    )
+
+    downside_deviation = (
+        np.sqrt(
+            np.mean(downside ** 2)
+        )
+        * np.sqrt(PERIODS_PER_YEAR)
+    )
+
+    annual_return = annualized_return(
+        portfolio_returns
+    )
+
+    sortino = (
+        (annual_return - risk_free_rate)
+        / downside_deviation
+        if downside_deviation > 0
+        else np.nan
+    )
+
+    return {
+        "Sortino": sortino,
+        "Downside Deviation": downside_deviation,
+        "Tỷ lệ kỳ âm":
+            (portfolio_returns < periodic_rf).mean()
+    }
+
+
+# ============================================================
+# 19.5. VaR VÀ CVaR
+# ============================================================
+
+def var_cvar_statistics(
+    portfolio_returns,
+    confidence=0.95
+):
+    """
+    Historical VaR và CVaR.
+
+    VaR được biểu diễn dưới dạng
+    mức lỗ dương.
+
+    CVaR là mức lỗ trung bình
+    trong phần đuôi vượt quá VaR.
+    """
+
+    if portfolio_returns.empty:
+        return {
+            "VaR": np.nan,
+            "CVaR": np.nan,
+            "Số quan sát đuôi": 0
+        }
+
+    losses = -portfolio_returns
+
+    var = losses.quantile(
+        confidence
+    )
+
+    tail_losses = losses[
+        losses >= var
+    ]
+
+    cvar = (
+        tail_losses.mean()
+        if not tail_losses.empty
+        else np.nan
+    )
+
+    return {
+        "VaR": var,
+        "CVaR": cvar,
+        "Số quan sát đuôi":
+            len(tail_losses)
+    }
+
+
+# ============================================================
+# 19.6. BẢNG HỒ SƠ RỦI RO NÂNG CAO
+# ============================================================
+
+def advanced_risk_table(
+    portfolio_results,
+    returns,
+    benchmark_returns,
+    risk_free_rate
+):
+
+    rows = []
+
+    for name, item in portfolio_results.items():
+
+        if item[0] is None:
+            continue
+
+        portfolio_returns = get_portfolio_returns(
+            item,
+            returns
+        )
+
+        if portfolio_returns.empty:
+            continue
+
+        downside = downside_statistics(
+            portfolio_returns,
+            risk_free_rate
+        )
+
+        risk_tail = var_cvar_statistics(
+            portfolio_returns,
+            confidence=0.95
+        )
+
+        rows.append({
+            "Danh mục": name,
+            "Lợi suất năm":
+                annualized_return(
+                    portfolio_returns
+                ),
+            "Biến động năm":
+                annualized_volatility(
+                    portfolio_returns
+                ),
+            "Sortino":
+                downside["Sortino"],
+            "Downside Deviation":
+                downside["Downside Deviation"],
+            "Tỷ lệ kỳ âm":
+                downside["Tỷ lệ kỳ âm"],
+            "VaR 95%":
+                risk_tail["VaR"],
+            "CVaR 95%":
+                risk_tail["CVaR"],
+            "Số quan sát đuôi":
+                risk_tail["Số quan sát đuôi"]
+        })
+
+    return pd.DataFrame(rows)
+
+
+# ============================================================
+# 19.7. INCREMENTAL RISK
+# ============================================================
+
+def incremental_risk_table(
+    weights_vector,
+    returns,
+    risk_free_rate,
+    step=0.01
+):
+    """
+    Đo tác động khi tăng tỷ trọng từng cổ phiếu thêm 1%.
+
+    Sau khi tăng một cổ phiếu,
+    phần còn lại được giảm tỷ trọng tương ứng
+    theo tỷ lệ hiện tại để tổng danh mục vẫn bằng 100%.
+    """
+
+    if weights_vector is None:
+        return pd.DataFrame()
+
+    w = pd.Series(
+        np.asarray(weights_vector, dtype=float),
+        index=returns.columns
+    )
+
+    base_return = (
+        w @ (
+            returns.mean()
+            * PERIODS_PER_YEAR
+        )
+    )
+
+    covariance = (
+        returns.cov()
+        * PERIODS_PER_YEAR
+    )
+
+    base_variance = (
+        w.values
+        @ covariance.values
+        @ w.values
+    )
+
+    base_volatility = np.sqrt(
+        base_variance
+    )
+
+    base_sharpe = (
+        (base_return - risk_free_rate)
+        / base_volatility
+        if base_volatility > 0
+        else np.nan
+    )
+
+    rows = []
+
+    for ticker in w.index:
+
+        current_weight = w[ticker]
+
+        if current_weight >= 1:
+            continue
+
+        new_w = w.copy()
+
+        increase = min(
+            step,
+            1 - current_weight
+        )
+
+        new_w[ticker] += increase
+
+        other_tickers = [
+            x for x in w.index
+            if x != ticker
+        ]
+
+        other_total = (
+            w[other_tickers].sum()
+        )
+
+        if other_total > 0:
+
+            reduction = (
+                increase
+                * w[other_tickers]
+                / other_total
+            )
+
+            new_w[other_tickers] -= reduction
+
+        new_return = (
+            new_w @ (
+                returns.mean()
+                * PERIODS_PER_YEAR
+            )
+        )
+
+        new_variance = (
+            new_w.values
+            @ covariance.values
+            @ new_w.values
+        )
+
+        new_volatility = np.sqrt(
+            max(new_variance, 0)
+        )
+
+        new_sharpe = (
+            (new_return - risk_free_rate)
+            / new_volatility
+            if new_volatility > 0
+            else np.nan
+        )
+
+        rows.append({
+            "Cổ phiếu": ticker,
+            "Tỷ trọng hiện tại": current_weight,
+            "Tăng thêm": increase,
+            "Thay đổi lợi nhuận":
+                new_return - base_return,
+            "Thay đổi rủi ro":
+                new_volatility - base_volatility,
+            "Thay đổi Sharpe":
+                new_sharpe - base_sharpe,
+            "Rủi ro mới":
+                new_volatility
+        })
+
+    result = pd.DataFrame(rows)
+
+    if not result.empty:
+        result = result.sort_values(
+            "Thay đổi rủi ro",
+            ascending=False
+        )
+
+    return result
+
+
+# ============================================================
+# 19.8. STRESS TEST THEO CÚ SỐC VNINDEX
+# ============================================================
+
+def portfolio_beta(
+    portfolio_returns,
+    benchmark_returns
+):
+
+    aligned = pd.concat(
+        [
+            portfolio_returns.rename("Portfolio"),
+            benchmark_returns.rename("Benchmark")
+        ],
+        axis=1
+    ).dropna()
+
+    if aligned.empty:
+        return np.nan
+
+    benchmark_variance = (
+        aligned["Benchmark"].var()
+    )
+
+    if benchmark_variance == 0:
+        return np.nan
+
+    return (
+        aligned["Portfolio"].cov(
+            aligned["Benchmark"]
+        )
+        / benchmark_variance
+    )
+
+
+def market_stress_test(
+    portfolio_results,
+    returns,
+    benchmark_returns
+):
+    """
+    Ước lượng phản ứng của danh mục
+    khi VNINDEX chịu cú sốc giả định.
+
+    Công thức:
+
+    Portfolio Shock =
+    Beta x Market Shock
+    """
+
+    scenarios = {
+        "VNINDEX giảm 5%": -0.05,
+        "VNINDEX giảm 10%": -0.10,
+        "VNINDEX giảm 15%": -0.15,
+        "VNINDEX giảm 20%": -0.20,
+        "VNINDEX tăng 10%": 0.10,
+        "VNINDEX tăng 20%": 0.20
+    }
+
+    rows = []
+
+    for name, item in portfolio_results.items():
+
+        if item[0] is None:
+            continue
+
+        portfolio_returns = get_portfolio_returns(
+            item,
+            returns
+        )
+
+        beta = portfolio_beta(
+            portfolio_returns,
+            benchmark_returns
+        )
+
+        for scenario, shock in scenarios.items():
+
+            estimated_return = (
+                beta * shock
+                if pd.notna(beta)
+                else np.nan
+            )
+
+            rows.append({
+                "Danh mục": name,
+                "Beta": beta,
+                "Kịch bản": scenario,
+                "Cú sốc VNINDEX": shock,
+                "Lợi suất danh mục ước tính":
+                    estimated_return
+            })
+
+    return pd.DataFrame(rows)
+
+
+# ============================================================
+# 19.9. STRESS TEST THEO TỪNG CỔ PHIẾU
+# ============================================================
+
+def single_asset_stress_test(
+    weights_vector,
+    shock=-0.20
+):
+    """
+    Giả định một cổ phiếu giảm shock,
+    các cổ phiếu khác không đổi.
+
+    Tác động danh mục:
+
+    Weight x Shock
+    """
+
+    if weights_vector is None:
+        return pd.DataFrame()
+
+    w = pd.Series(
+        np.asarray(weights_vector, dtype=float)
+    )
+
+    rows = []
+
+    for i, value in enumerate(w):
+
+        rows.append({
+            "Vị trí tài sản": i,
+            "Tỷ trọng": value,
+            "Cú sốc tài sản": shock,
+            "Tác động danh mục":
+                value * shock
+        })
+
+    return pd.DataFrame(rows)
+
+
+def named_asset_stress_test(
+    weights_vector,
+    returns,
+    shock=-0.20
+):
+    """
+    Stress từng cổ phiếu trong danh mục.
+    """
+
+    if weights_vector is None:
+        return pd.DataFrame()
+
+    w = pd.Series(
+        np.asarray(weights_vector, dtype=float),
+        index=returns.columns
+    )
+
+    rows = []
+
+    for ticker in w.index:
+
+        impact = (
+            w[ticker]
+            * shock
+        )
+
+        rows.append({
+            "Cổ phiếu": ticker,
+            "Tỷ trọng": w[ticker],
+            "Cú sốc": shock,
+            "Tác động danh mục": impact
+        })
+
+    result = pd.DataFrame(rows)
+
+    return result.sort_values(
+        "Tác động danh mục"
+    )
+
+
+# ============================================================
+# 19.10. REVERSE STRESS TEST
+# ============================================================
+
+def reverse_stress_test(
+    weights_vector,
+    returns,
+    target_loss=-0.20
+):
+    """
+    Xác định mức giảm giả định của từng cổ phiếu
+    nếu chỉ riêng cổ phiếu đó gây ra target_loss
+    cho toàn bộ danh mục.
+
+    Shock_i =
+    Target Loss / Weight_i
+    """
+
+    if weights_vector is None:
+        return pd.DataFrame()
+
+    w = pd.Series(
+        np.asarray(weights_vector, dtype=float),
+        index=returns.columns
+    )
+
+    rows = []
+
+    for ticker in w.index:
+
+        if w[ticker] <= 0:
+            continue
+
+        required_shock = (
+            target_loss
+            / w[ticker]
+        )
+
+        rows.append({
+            "Cổ phiếu": ticker,
+            "Tỷ trọng": w[ticker],
+            "Mức lỗ danh mục mục tiêu":
+                target_loss,
+            "Cú sốc riêng cần thiết":
+                required_shock
+        })
+
+    result = pd.DataFrame(rows)
+
+    return result.sort_values(
+        "Cú sốc riêng cần thiết",
+        ascending=False
+    )
+
+
+# ============================================================
+# 19.11. PHÂN TÍCH ỔN ĐỊNH THEO THỜI GIAN
+# ============================================================
+
+def rolling_portfolio_statistics(
+    portfolio_returns,
+    window=52,
+    risk_free_rate=0
+):
+    """
+    Phân tích rolling 52 kỳ.
+
+    Vì phiên phân tích hiện tại của v22
+    là dữ liệu tuần nên 52 kỳ tương đương khoảng 1 năm.
+    """
+
+    if portfolio_returns.empty:
+        return pd.DataFrame()
+
+    rolling_return = (
+        (1 + portfolio_returns)
+        .rolling(window)
+        .apply(np.prod, raw=True)
+        - 1
+    )
+
+    rolling_volatility = (
+        portfolio_returns
+        .rolling(window)
+        .std()
+        * np.sqrt(PERIODS_PER_YEAR)
+    )
+
+    rolling_mean = (
+        portfolio_returns
+        .rolling(window)
+        .mean()
+        * PERIODS_PER_YEAR
+    )
+
+    rolling_sharpe = (
+        rolling_mean - risk_free_rate
+    ) / rolling_volatility.replace(
+        0,
+        np.nan
+    )
+
+    result = pd.DataFrame({
+        "Rolling Return": rolling_return,
+        "Rolling Volatility":
+            rolling_volatility,
+        "Rolling Sharpe":
+            rolling_sharpe
+    })
+
+    return result.dropna(
+        how="all"
+    )
+
+
+def stability_summary(
+    portfolio_results,
+    returns,
+    risk_free_rate,
+    window=52
+):
+
+    rows = []
+
+    for name, item in portfolio_results.items():
+
+        if item[0] is None:
+            continue
+
+        portfolio_returns = get_portfolio_returns(
+            item,
+            returns
+        )
+
+        rolling = rolling_portfolio_statistics(
+            portfolio_returns,
+            window,
+            risk_free_rate
+        )
+
+        if rolling.empty:
+            continue
+
+        rows.append({
+            "Danh mục": name,
+            "Rolling Return thấp nhất":
+                rolling["Rolling Return"].min(),
+            "Rolling Return trung vị":
+                rolling["Rolling Return"].median(),
+            "Rolling Return cao nhất":
+                rolling["Rolling Return"].max(),
+            "Rolling Volatility thấp nhất":
+                rolling["Rolling Volatility"].min(),
+            "Rolling Volatility cao nhất":
+                rolling["Rolling Volatility"].max(),
+            "Rolling Sharpe thấp nhất":
+                rolling["Rolling Sharpe"].min(),
+            "Rolling Sharpe trung vị":
+                rolling["Rolling Sharpe"].median(),
+            "Rolling Sharpe cao nhất":
+                rolling["Rolling Sharpe"].max(),
+            "Tỷ lệ Rolling Sharpe dương":
+                (
+                    rolling["Rolling Sharpe"] > 0
+                ).mean()
+        })
+
+    return pd.DataFrame(rows)
+
+
+# ============================================================
+# 19.12. TẠO BẢNG ĐÓNG GÓP CHO TẤT CẢ DANH MỤC
+# ============================================================
+
+def all_return_contribution_tables(
+    portfolio_results,
+    returns
+):
+
+    result = {}
+
+    for name, item in portfolio_results.items():
+
+        if item[0] is None:
+            continue
+
+        result[name] = return_contribution_table(
+            item[0],
+            returns
+        )
+
+    return result
+
+
+def all_risk_contribution_tables(
+    portfolio_results,
+    returns
+):
+
+    result = {}
+
+    for name, item in portfolio_results.items():
+
+        if item[0] is None:
+            continue
+
+        result[name] = risk_contribution_table(
+            item[0],
+            returns
+        )
+
+    return result
+
+
+# ============================================================
+# 19.13. CHẠY PHÂN TÍCH NÂNG CAO
+# ============================================================
+
+print("\n")
+print("=" * 70)
+print("19. PHÂN TÍCH NÂNG CAO DANH MỤC")
+print("=" * 70)
+
+
+# ============================================================
+# 19A. HỒ SƠ RỦI RO
+# ============================================================
+
+print("\n19A. HỒ SƠ RỦI RO NÂNG CAO")
+
+advanced_risk = advanced_risk_table(
+    main_portfolio_results,
+    returns,
+    benchmark_returns,
+    risk_free_rate
+)
+
+display(
+    advanced_risk.style.format({
+        "Lợi suất năm": "{:.2%}",
+        "Biến động năm": "{:.2%}",
+        "Sortino": "{:.3f}",
+        "Downside Deviation": "{:.2%}",
+        "Tỷ lệ kỳ âm": "{:.2%}",
+        "VaR 95%": "{:.2%}",
+        "CVaR 95%": "{:.2%}"
+    })
+)
+
+
+# ============================================================
+# 19B. PHÂN RÃ LỢI NHUẬN
+# ============================================================
+
+print("\n19B. PHÂN RÃ LỢI NHUẬN")
+
+return_contributions = (
+    all_return_contribution_tables(
+        main_portfolio_results,
+        returns
+    )
+)
+
+for name, table in return_contributions.items():
+
+    print(f"\nDanh mục: {name}")
+
+    display(
+        table.style.format({
+            "Tỷ trọng": "{:.2%}",
+            "Lợi suất năm": "{:.2%}",
+            "Đóng góp lợi nhuận": "{:.2%}",
+            "Tỷ lệ đóng góp": "{:.2%}"
+        })
+    )
+
+
+# ============================================================
+# 19C. PHÂN RÃ RỦI RO
+# ============================================================
+
+print("\n19C. PHÂN RÃ RỦI RO")
+
+risk_contributions = (
+    all_risk_contribution_tables(
+        main_portfolio_results,
+        returns
+    )
+)
+
+for name, table in risk_contributions.items():
+
+    print(f"\nDanh mục: {name}")
+
+    display(
+        table.style.format({
+            "Tỷ trọng": "{:.2%}",
+            "Rủi ro biên": "{:.4f}",
+            "Đóng góp rủi ro": "{:.2%}",
+            "Tỷ lệ đóng góp rủi ro": "{:.2%}"
+        })
+    )
+
+
+# ============================================================
+# 19D. INCREMENTAL RISK
+# ============================================================
+
+print("\n19D. INCREMENTAL RISK")
+
+incremental_tables = {}
+
+for name, item in main_portfolio_results.items():
+
+    if item[0] is None:
+        continue
+
+    incremental = incremental_risk_table(
+        item[0],
+        returns,
+        risk_free_rate,
+        step=0.01
+    )
+
+    incremental_tables[name] = incremental
+
+    print(
+        f"\nDanh mục: {name}"
+    )
+
+    display(
+        incremental.style.format({
+            "Tỷ trọng hiện tại": "{:.2%}",
+            "Tăng thêm": "{:.2%}",
+            "Thay đổi lợi nhuận": "{:+.2%}",
+            "Thay đổi rủi ro": "{:+.2%}",
+            "Thay đổi Sharpe": "{:+.4f}",
+            "Rủi ro mới": "{:.2%}"
+        })
+    )
+
+
+# ============================================================
+# 19E. STRESS TEST THỊ TRƯỜNG
+# ============================================================
+
+print("\n19E. STRESS TEST THEO VNINDEX")
+
+stress_market = market_stress_test(
+    main_portfolio_results,
+    returns,
+    benchmark_returns
+)
+
+display(
+    stress_market.style.format({
+        "Beta": "{:.3f}",
+        "Cú sốc VNINDEX": "{:+.2%}",
+        "Lợi suất danh mục ước tính":
+            "{:+.2%}"
+    })
+)
+
+
+# ============================================================
+# 19F. STRESS TEST CỔ PHIẾU
+# ============================================================
+
+print("\n19F. STRESS TEST TỪNG CỔ PHIẾU")
+
+asset_stress_tables = {}
+
+for name, item in main_portfolio_results.items():
+
+    if item[0] is None:
+        continue
+
+    stress_asset = named_asset_stress_test(
+        item[0],
+        returns,
+        shock=-0.20
+    )
+
+    asset_stress_tables[name] = stress_asset
+
+    print(
+        f"\nDanh mục: {name}"
+    )
+
+    display(
+        stress_asset.style.format({
+            "Tỷ trọng": "{:.2%}",
+            "Cú sốc": "{:+.2%}",
+            "Tác động danh mục":
+                "{:+.2%}"
+        })
+    )
+
+
+# ============================================================
+# 19G. REVERSE STRESS TEST
+# ============================================================
+
+print("\n19G. REVERSE STRESS TEST")
+
+reverse_stress_tables = {}
+
+for name, item in main_portfolio_results.items():
+
+    if item[0] is None:
+        continue
+
+    reverse = reverse_stress_test(
+        item[0],
+        returns,
+        target_loss=-0.20
+    )
+
+    reverse_stress_tables[name] = reverse
+
+    print(
+        f"\nDanh mục: {name}"
+    )
+
+    display(
+        reverse.style.format({
+            "Tỷ trọng": "{:.2%}",
+            "Mức lỗ danh mục mục tiêu":
+                "{:.2%}",
+            "Cú sốc riêng cần thiết":
+                "{:+.2%}"
+        })
+    )
+
+
+# ============================================================
+# 19H. ĐỘ ỔN ĐỊNH THEO THỜI GIAN
+# ============================================================
+
+print("\n19H. PHÂN TÍCH ĐỘ ỔN ĐỊNH")
+
+stability = stability_summary(
+    main_portfolio_results,
+    returns,
+    risk_free_rate,
+    window=52
+)
+
+display(
+    stability.style.format({
+        "Rolling Return thấp nhất":
+            "{:.2%}",
+        "Rolling Return trung vị":
+            "{:.2%}",
+        "Rolling Return cao nhất":
+            "{:.2%}",
+        "Rolling Volatility thấp nhất":
+            "{:.2%}",
+        "Rolling Volatility cao nhất":
+            "{:.2%}",
+        "Rolling Sharpe thấp nhất":
+            "{:.3f}",
+        "Rolling Sharpe trung vị":
+            "{:.3f}",
+        "Rolling Sharpe cao nhất":
+            "{:.3f}",
+        "Tỷ lệ Rolling Sharpe dương":
+            "{:.2%}"
+    })
+)
+
+
+# ============================================================
+# 19I. BIỂU ĐỒ ROLLING SHARPE
+# ============================================================
+
+print("\n19I. BIỂU ĐỒ ROLLING SHARPE")
+
+for name, item in main_portfolio_results.items():
+
+    if item[0] is None:
+        continue
+
+    portfolio_returns = get_portfolio_returns(
+        item,
+        returns
+    )
+
+    rolling = rolling_portfolio_statistics(
+        portfolio_returns,
+        window=52,
+        risk_free_rate=risk_free_rate
+    )
+
+    if rolling.empty:
+        continue
+
+    plt.figure(figsize=(12, 5))
+
+    plt.plot(
+        rolling.index,
+        rolling["Rolling Sharpe"],
+        linewidth=1.5
+    )
+
+    plt.axhline(
+        0,
+        linestyle="--",
+        linewidth=1
+    )
+
+    plt.title(
+        f"Rolling Sharpe 52 kỳ — {name}"
+    )
+
+    plt.xlabel("Thời gian")
+    plt.ylabel("Sharpe")
+
+    plt.grid(
+        alpha=0.25
+    )
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ============================================================
+# 19J. BIỂU ĐỒ ĐÓNG GÓP RỦI RO
+# ============================================================
+
+print("\n19J. BIỂU ĐỒ ĐÓNG GÓP RỦI RO")
+
+for name, table in risk_contributions.items():
+
+    if table.empty:
+        continue
+
+    plot_data = (
+        table["Tỷ lệ đóng góp rủi ro"]
+        .sort_values()
+    )
+
+    plt.figure(figsize=(10, 6))
+
+    plot_data.plot(
+        kind="barh"
+    )
+
+    plt.title(
+        f"Đóng góp rủi ro — {name}"
+    )
+
+    plt.xlabel(
+        "Tỷ lệ đóng góp rủi ro"
+    )
+
+    plt.ylabel(
+        "Cổ phiếu"
+    )
+
+    plt.grid(
+        axis="x",
+        alpha=0.25
+    )
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ============================================================
+# 19K. CẢNH BÁO RỦI RO NÂNG CAO
+# ============================================================
+
+print("\n19K. CẢNH BÁO QUẢN TRỊ")
+
+warning_rows = []
+
+for _, row in advanced_risk.iterrows():
+
+    warnings_list = []
+
+    if pd.notna(row["CVaR 95%"]):
+        if row["CVaR 95%"] > 0.08:
+            warnings_list.append(
+                "CVaR cao"
+            )
+
+    if pd.notna(row["Downside Deviation"]):
+        if row["Downside Deviation"] > 0.20:
+            warnings_list.append(
+                "Rủi ro phía giảm cao"
+            )
+
+    if pd.notna(row["Tỷ lệ kỳ âm"]):
+        if row["Tỷ lệ kỳ âm"] > 0.50:
+            warnings_list.append(
+                "Tần suất kỳ âm cao"
+            )
+
+    stability_row = stability[
+        stability["Danh mục"]
+        == row["Danh mục"]
+    ]
+
+    if not stability_row.empty:
+
+        rolling_sharpe_min = (
+            stability_row.iloc[0]
+            ["Rolling Sharpe thấp nhất"]
+        )
+
+        if pd.notna(rolling_sharpe_min):
+            if rolling_sharpe_min < -1:
+                warnings_list.append(
+                    "Rolling Sharpe từng rất yếu"
+                )
+
+    if not warnings_list:
+        warning_text = (
+            "Chưa phát hiện cảnh báo chính"
+        )
+    else:
+        warning_text = "; ".join(
+            warnings_list
+        )
+
+    warning_rows.append({
+        "Danh mục": row["Danh mục"],
+        "CVaR 95%": row["CVaR 95%"],
+        "Downside Deviation":
+            row["Downside Deviation"],
+        "Tỷ lệ kỳ âm":
+            row["Tỷ lệ kỳ âm"],
+        "Cảnh báo":
+            warning_text
+    })
+
+advanced_warnings = pd.DataFrame(
+    warning_rows
+)
+
+display(
+    advanced_warnings.style.format({
+        "CVaR 95%": "{:.2%}",
+        "Downside Deviation": "{:.2%}",
+        "Tỷ lệ kỳ âm": "{:.2%}"
+    })
+)
+
+
+print("\n")
+print("=" * 70)
+print("HOÀN TẤT PHÂN TÍCH NÂNG CAO")
+print("=" * 70)
