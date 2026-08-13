@@ -1,6 +1,6 @@
 
 # ============================================================
-# PORTFOLIO RESEARCH APP V21.2
+# PORTFOLIO RESEARCH 
 # VNSTOCK COMMUNITY / GOOGLE COLAB
 # ============================================================
 
