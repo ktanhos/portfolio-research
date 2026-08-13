@@ -6,6 +6,73 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
+
+PERCENT_KEYWORDS = (
+    "Lợi suất",
+    "Lợi nhuận",
+    "Rủi ro",
+    "Biến động",
+    "Mục tiêu",
+    "Chênh lệch",
+    "Max Drawdown",
+    "Tỷ lệ",
+    "Tỷ trọng",
+    "Lãi suất",
+    "Chi phí vay",
+    "Alpha",
+    "Tracking Error",
+    "Vượt VNINDEX",
+    "ROA",
+    "ROE",
+)
+
+
+def _pct_value(x):
+    if pd.isna(x):
+        return "N/A"
+    if isinstance(x, str):
+        return x
+    return f"{x:.2%}"
+
+
+def render_df(df, *, hide_index=False):
+    """Hiển thị bảng và tự định dạng các đại lượng tỷ lệ thành %."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return
+
+    percent_columns = {
+        col
+        for col in df.columns
+        if any(keyword in str(col) for keyword in PERCENT_KEYWORDS)
+    }
+
+    format_map = {col: _pct_value for col in percent_columns}
+
+    st.dataframe(
+        df.style.format(format_map, na_rep="N/A"),
+        use_container_width=True,
+        hide_index=hide_index,
+    )
+
+
+def render_weight_table(df, *, hide_index=False):
+    """Bảng tỷ trọng: mọi cột số được hiển thị dưới dạng %."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return
+
+    format_map = {
+        col: _pct_value
+        for col in df.columns
+        if pd.api.types.is_numeric_dtype(df[col])
+    }
+
+    st.dataframe(
+        df.style.format(format_map, na_rep="N/A"),
+        use_container_width=True,
+        hide_index=hide_index,
+    )
+
+
 from portfolio_engine import (
     configure_vnstock,
     run_research,
@@ -52,21 +119,21 @@ with left:
     )
 
 with right:
-    risk_free_rate = st.number_input(
-        "Lãi suất phi rủi ro",
+    risk_free_rate_input = st.number_input(
+        "Lãi suất phi rủi ro (%)",
         min_value=0.0,
-        max_value=1.0,
-        value=0.04,
-        step=0.005,
-        format="%.3f",
+        max_value=100.0,
+        value=4.0,
+        step=0.5,
+        format="%.2f",
     )
 
-    target_return = st.number_input(
-        "Lợi nhuận mục tiêu",
-        min_value=-1.0,
-        max_value=3.0,
-        value=0.15,
-        step=0.01,
+    target_return_input = st.number_input(
+        "Lợi nhuận mục tiêu (%)",
+        min_value=-100.0,
+        max_value=300.0,
+        value=15.0,
+        step=1.0,
         format="%.2f",
     )
 
@@ -88,6 +155,10 @@ risk_aversion_map = {
 }
 
 risk_aversion = risk_aversion_map[risk_profile]
+
+# Người dùng nhập theo %, engine tính theo dạng thập phân.
+risk_free_rate = risk_free_rate_input / 100.0
+target_return = target_return_input / 100.0
 
 # ------------------------------------------------------------
 # ĐÒN BẨY
@@ -120,6 +191,8 @@ if use_leverage:
     )
 
     st.caption(
+        "Tỷ lệ vay trong bảng margin nhập theo % vốn tự có. "
+        "Ví dụ 100% = vay 100 đồng cho 100 đồng vốn tự có. "
         "1,0 lần = không vay | "
         "1,5 lần = vay 50% vốn tự có | "
         "2,0 lần = vay 100% vốn tự có"
@@ -286,11 +359,7 @@ if run_analysis:
         st.subheader("3. TỔNG QUAN DOANH NGHIỆP")
 
         if not company_table.empty:
-            st.dataframe(
-                company_table,
-                use_container_width=True,
-                hide_index=True,
-            )
+            render_df(company_table, hide_index=True)
 
         # ----------------------------------------------------
         # 4. VNINDEX
@@ -304,11 +373,7 @@ if run_analysis:
         )
 
         if not benchmark_summary.empty:
-            st.dataframe(
-                benchmark_summary,
-                use_container_width=True,
-                hide_index=True,
-            )
+            render_df(benchmark_summary, hide_index=True)
 
         # ----------------------------------------------------
         # 5. PHÂN TÍCH TỪNG CỔ PHIẾU
@@ -322,10 +387,7 @@ if run_analysis:
         )
 
         if not asset_summary.empty:
-            st.dataframe(
-                asset_summary,
-                use_container_width=True,
-            )
+            render_df(asset_summary)
 
         st.markdown("**Ma trận tương quan**")
 
@@ -335,10 +397,7 @@ if run_analysis:
         )
 
         if not correlation.empty:
-            st.dataframe(
-                correlation,
-                use_container_width=True,
-            )
+            render_df(correlation)
 
         # ----------------------------------------------------
         # 6. TỐI ƯU DANH MỤC
@@ -352,11 +411,7 @@ if run_analysis:
         )
 
         if not portfolio_table.empty:
-            st.dataframe(
-                portfolio_table,
-                use_container_width=True,
-                hide_index=True,
-            )
+            render_df(portfolio_table, hide_index=True)
 
         weights = results.get(
             "weights",
@@ -365,10 +420,7 @@ if run_analysis:
 
         if not weights.empty:
             st.markdown("**Phân bổ tỷ trọng**")
-            st.dataframe(
-                weights,
-                use_container_width=True,
-            )
+            render_weight_table(weights)
 
         # ----------------------------------------------------
         # 6.1 / 6.2 ĐÒN BẨY
@@ -384,11 +436,7 @@ if run_analysis:
             )
 
             if not levered_table.empty:
-                st.dataframe(
-                    levered_table,
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                render_df(levered_table, hide_index=True)
 
             st.subheader("6.2. PHÂN BỔ DANH MỤC CÓ ĐÒN BẨY")
 
@@ -398,11 +446,7 @@ if run_analysis:
             )
 
             if not levered_alloc.empty:
-                st.dataframe(
-                    levered_alloc,
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                render_weight_table(levered_alloc, hide_index=True)
 
         # ----------------------------------------------------
         # 6.3 TARGET RETURN
@@ -416,11 +460,7 @@ if run_analysis:
         )
 
         if isinstance(target_summary, pd.DataFrame) and not target_summary.empty:
-            st.dataframe(
-                target_summary,
-                use_container_width=True,
-                hide_index=True,
-            )
+            render_df(target_summary, hide_index=True)
 
         target_check = results.get(
             "target_check",
@@ -428,11 +468,7 @@ if run_analysis:
         )
 
         if not target_check.empty:
-            st.dataframe(
-                target_check,
-                use_container_width=True,
-                hide_index=True,
-            )
+            render_df(target_check, hide_index=True)
 
         # ----------------------------------------------------
         # 7. SO SÁNH VỚI VNINDEX
@@ -446,11 +482,7 @@ if run_analysis:
         )
 
         if not comparison.empty:
-            st.dataframe(
-                comparison,
-                use_container_width=True,
-                hide_index=True,
-            )
+            render_df(comparison, hide_index=True)
 
         # ----------------------------------------------------
         # 8. CÁC CHỈ TIÊU RỦI RO
@@ -465,11 +497,7 @@ if run_analysis:
 
         if isinstance(attainment, pd.DataFrame) and not attainment.empty:
             st.markdown("**Khả năng đạt mục tiêu**")
-            st.dataframe(
-                attainment,
-                use_container_width=True,
-                hide_index=True,
-            )
+            render_df(attainment, hide_index=True)
 
         concentration = results.get(
             "concentration",
@@ -478,11 +506,7 @@ if run_analysis:
 
         if isinstance(concentration, pd.DataFrame) and not concentration.empty:
             st.markdown("**Mức độ tập trung danh mục**")
-            st.dataframe(
-                concentration,
-                use_container_width=True,
-                hide_index=True,
-            )
+            render_df(concentration, hide_index=True)
 
         risk_diagnostics = results.get(
             "risk_diagnostics",
@@ -491,11 +515,7 @@ if run_analysis:
 
         if isinstance(risk_diagnostics, pd.DataFrame) and not risk_diagnostics.empty:
             st.markdown("**Max Drawdown và thời gian phục hồi**")
-            st.dataframe(
-                risk_diagnostics,
-                use_container_width=True,
-                hide_index=True,
-            )
+            render_df(risk_diagnostics, hide_index=True)
 
         # ----------------------------------------------------
         # 9. KẾT LUẬN ĐỊNH LƯỢNG
@@ -509,11 +529,7 @@ if run_analysis:
         )
 
         if isinstance(conclusion, pd.DataFrame) and not conclusion.empty:
-            st.dataframe(
-                conclusion,
-                use_container_width=True,
-                hide_index=True,
-            )
+            render_df(conclusion, hide_index=True)
 
         # ----------------------------------------------------
         # 10. BIỂU ĐỒ
