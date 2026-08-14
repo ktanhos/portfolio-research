@@ -57,28 +57,109 @@ _core.income_row_value = income_row_value
 _core_run_research = _core.run_research
 
 
-def _annotate_comparison_figures():
-    portfolio_names = ["Naive", "Minimum Variance", "Optimal Risky", "Maximum Return", "Complete Portfolio"]
+def _annotate_comparison_figures(portfolio_results=None):
+    """Gắn nhãn theo đúng tọa độ lợi suất và rủi ro của từng danh mục.
+
+    Không dùng thứ tự các điểm trong Matplotlib. Mỗi nhãn được tạo từ chính
+    kết quả của portfolio_results rồi ghép với điểm gần nhất trên biểu đồ.
+    Vì vậy thứ tự vẽ thay đổi cũng không làm sai tên danh mục.
+    """
+    if not isinstance(portfolio_results, dict) or not portfolio_results:
+        return
+
+    expected = []
+    preferred_order = [
+        "Naive",
+        "Minimum Variance",
+        "Optimal Risky",
+        "Maximum Return",
+        "Complete Portfolio",
+    ]
+
+    for name in preferred_order:
+        item = portfolio_results.get(name)
+        if not isinstance(item, (tuple, list)) or len(item) < 2:
+            continue
+        stats = item[1]
+        if not isinstance(stats, dict):
+            continue
+        try:
+            x = float(stats.get("volatility", np.nan))
+            y = float(stats.get("return", np.nan))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(x) and np.isfinite(y):
+            expected.append((name, x, y))
+
+    if not expected:
+        return
+
     for fig_num in plt.get_fignums():
         fig = plt.figure(fig_num)
         for ax in fig.axes:
             title = str(ax.get_title()).lower()
-            if "mục tiêu" not in title and "so sánh rủi ro" not in title and "so sánh" not in title:
+            if "so sánh rủi ro" not in title:
                 continue
-            offsets = []
+
+            points = []
             for collection in ax.collections:
                 try:
-                    values = collection.get_offsets()
-                    for value in values:
-                        offsets.append((float(value[0]), float(value[1])))
+                    offsets = collection.get_offsets()
+                    for value in offsets:
+                        x = float(value[0])
+                        y = float(value[1])
+                        if np.isfinite(x) and np.isfinite(y):
+                            points.append((x, y))
                 except Exception:
                     continue
-            if not offsets or len(ax.texts) >= len(offsets):
+
+            if not points:
                 continue
-            for i, (x, y) in enumerate(offsets):
-                if i >= len(portfolio_names):
-                    break
-                ax.annotate(portfolio_names[i], (x, y), xytext=(8, 8), textcoords="offset points", fontsize=9, bbox=dict(boxstyle="round,pad=0.2", alpha=0.7))
+
+            # Nếu biểu đồ đã có đúng số nhãn thì không thêm lại.
+            existing_names = {
+                str(text.get_text()).strip()
+                for text in ax.texts
+                if str(text.get_text()).strip()
+            }
+
+            # Ghép mỗi danh mục với điểm gần nhất theo khoảng cách chuẩn hóa.
+            # Chuẩn hóa hai trục để rủi ro và lợi suất có trọng số tương đương.
+            all_x = [p[1] for p in expected] + [p[0] for p in points]
+            all_y = [p[2] for p in expected] + [p[1] for p in points]
+            scale_x = max(max(all_x) - min(all_x), 1e-12)
+            scale_y = max(max(all_y) - min(all_y), 1e-12)
+
+            candidates = []
+            for name, ex, ey in expected:
+                for idx, (px, py) in enumerate(points):
+                    distance = ((ex - px) / scale_x) ** 2 + ((ey - py) / scale_y) ** 2
+                    candidates.append((distance, name, idx, px, py))
+
+            # Ghép một điểm cho một danh mục, ưu tiên khoảng cách nhỏ nhất.
+            candidates.sort(key=lambda item: item[0])
+            assigned_names = set()
+            assigned_points = set()
+            matches = []
+            for distance, name, idx, px, py in candidates:
+                if name in assigned_names or idx in assigned_points:
+                    continue
+                assigned_names.add(name)
+                assigned_points.add(idx)
+                matches.append((name, px, py))
+
+            for name, x, y in matches:
+                if name in existing_names:
+                    continue
+                ax.annotate(
+                    name,
+                    (x, y),
+                    xytext=(8, 8),
+                    textcoords="offset points",
+                    fontsize=9,
+                    bbox=dict(boxstyle="round,pad=0.2", alpha=0.7),
+                    zorder=10,
+                )
 
 
 def build_advanced_portfolio_analysis(returns, portfolio_returns, benchmark_returns=None, company_table=None, risk_free_rate=0.0, target_return=0.15):
@@ -177,17 +258,14 @@ def _run_all_advanced(returns, portfolio_returns, benchmark_returns, company_tab
 
 def run_research(*args, **kwargs):
     global _LAST_RESULTS
-    original_show = plt.show
-    def show_with_labels(*show_args, **show_kwargs):
-        _annotate_comparison_figures()
-        return original_show(*show_args, **show_kwargs)
-    plt.show = show_with_labels
-    try:
-        results = _core_run_research(*args, **kwargs)
-    finally:
-        plt.show = original_show
+    results = _core_run_research(*args, **kwargs)
     if not isinstance(results, dict):
         return results
+
+    # Gắn nhãn sau khi engine đã tạo xong toàn bộ biểu đồ và có sẵn
+    # portfolio_results. Việc ghép nhãn dựa trên tọa độ thật của từng danh mục,
+    # không dựa vào thứ tự các điểm mà Matplotlib trả về.
+    _annotate_comparison_figures(results.get("portfolio_results"))
 
     returns = results.get("returns")
     rf = kwargs.get("risk_free_rate", results.get("risk_free_rate", 0.0))
