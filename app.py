@@ -3,6 +3,7 @@ import io
 from datetime import date
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -21,9 +22,8 @@ st.set_page_config(
 st.title("PORTFOLIO RESEARCH")
 st.caption("Phân tích và tối ưu danh mục cổ phiếu Việt Nam")
 
-
 # ------------------------------------------------------------
-# ĐỊNH DẠNG HIỂN THỊ AN TOÀN
+# ĐỊNH DẠNG HIỂN THỊ
 # ------------------------------------------------------------
 
 MONEY_COLUMNS = {
@@ -39,6 +39,11 @@ INTEGER_COLUMNS = {
     "Số quan sát đuôi",
     "Phục hồi (ngày)",
     "Thời gian phục hồi",
+}
+
+PERCENT_COLUMNS = {
+    "ROA",
+    "ROE",
 }
 
 RATIO_COLUMNS = {
@@ -58,6 +63,19 @@ RATIO_COLUMNS = {
     "Rolling Sharpe thấp nhất",
     "Rolling Sharpe trung vị",
     "Rolling Sharpe cao nhất",
+}
+
+TEXT_COLUMNS = {
+    "Đạt mục tiêu",
+    "Trạng thái",
+    "Trạng thái mục tiêu",
+    "Trạng thái phục hồi",
+    "Được cấp margin",
+    "Mã",
+    "Danh mục",
+    "Benchmark",
+    "Năm doanh thu",
+    "Năm LNST",
 }
 
 PERCENT_KEYWORDS = [
@@ -92,17 +110,6 @@ PERCENT_KEYWORDS = [
     "cú sốc riêng cần thiết",
 ]
 
-TEXT_COLUMNS = {
-    "Đạt mục tiêu",
-    "Trạng thái",
-    "Trạng thái mục tiêu",
-    "Trạng thái phục hồi",
-    "Được cấp margin",
-    "Mã",
-    "Danh mục",
-    "Benchmark",
-}
-
 
 def _is_missing(value):
     try:
@@ -118,12 +125,9 @@ def fmt_number_vi(value, decimals=2, signed=False):
     try:
         value = float(value)
     except (TypeError, ValueError):
-        # Quan trọng: các giá trị như Có/Không phải văn bản,
-        # không được ép sang float.
         return str(value)
 
     sign = "+" if signed and value > 0 else ""
-
     text = f"{abs(value):,.{decimals}f}"
     text = (
         text
@@ -147,19 +151,11 @@ def fmt_percent_vi(value, signed=False):
     except (TypeError, ValueError):
         return str(value)
 
-    return fmt_number_vi(
-        value * 100,
-        2,
-        signed=signed,
-    ) + "%"
+    return fmt_number_vi(value * 100, 2, signed=signed) + "%"
 
 
-FINANCIAL_STATEMENT_COLUMNS = {
-    "Doanh thu gần nhất",
-    "LNST gần nhất",
-}
-
-def fmt_money_vnd(value, financial_statement=False):
+def fmt_money_vnd(value):
+    """Định dạng tiền từ giá trị nội bộ đã chuẩn hóa về VND."""
     if _is_missing(value):
         return "N/A"
 
@@ -167,13 +163,6 @@ def fmt_money_vnd(value, financial_statement=False):
         value = float(value)
     except (TypeError, ValueError):
         return str(value)
-
-    # Kết quả BCTC hiện tại từ engine đang thấp hơn đơn vị VND
-    # đúng 1.000 lần so với giá trị kinh tế cần hiển thị.
-    # Chỉ áp dụng hiệu chỉnh này cho doanh thu và LNST, không áp dụng
-    # cho vốn hóa.
-    if financial_statement:
-        value *= 1000
 
     absolute = abs(value)
 
@@ -190,11 +179,11 @@ def fmt_money_vnd(value, financial_statement=False):
 def is_percent_column(column):
     name = str(column).strip().lower()
 
-    # Đây là các cột trạng thái văn bản. Đặc biệt không để
-    # "Đạt mục tiêu" bị nhận nhầm thành cột phần trăm chỉ vì
-    # tên cột có chữ "mục tiêu".
     if column in TEXT_COLUMNS:
         return False
+
+    if column in PERCENT_COLUMNS:
+        return True
 
     if column in RATIO_COLUMNS:
         return False
@@ -205,11 +194,7 @@ def is_percent_column(column):
     return any(keyword in name for keyword in PERCENT_KEYWORDS)
 
 
-def render_df(
-    df,
-    hide_index=True,
-    percent_signed_columns=None,
-):
+def render_df(df, hide_index=True, percent_signed_columns=None):
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return
 
@@ -226,49 +211,40 @@ def render_df(
         elif column in MONEY_COLUMNS:
             out[column] = out[column].map(fmt_money_vnd)
 
+        elif column in PERCENT_COLUMNS:
+            out[column] = out[column].map(fmt_percent_vi)
+
         elif column in INTEGER_COLUMNS:
             out[column] = out[column].map(
-                lambda x:
-                "N/A"
-                if _is_missing(x)
-                else fmt_number_vi(x, 0)
+                lambda x: "N/A" if _is_missing(x) else fmt_number_vi(x, 0)
             )
 
         elif column in RATIO_COLUMNS:
             decimals = 3
-
-            if column in {
+            if column in {"P/E", "P/B"}:
+                decimals = 2
+            elif column in {
                 "HHI",
                 "Số tài sản hiệu dụng",
                 "Số tài sản hiệu dụng theo |w|",
             }:
                 decimals = 2
-
-            if column == "Thay đổi Sharpe":
+            elif column == "Thay đổi Sharpe":
                 decimals = 4
 
             out[column] = out[column].map(
-                lambda x:
-                "N/A"
-                if _is_missing(x)
-                else fmt_number_vi(x, decimals)
+                lambda x: "N/A" if _is_missing(x) else fmt_number_vi(x, decimals)
             )
 
         elif is_percent_column(column):
             signed = column in percent_signed_columns
             out[column] = out[column].map(
-                lambda x: fmt_percent_vi(
-                    x,
-                    signed=signed,
-                )
+                lambda x: fmt_percent_vi(x, signed=signed)
             )
 
         elif pd.api.types.is_numeric_dtype(out[column]):
             out[column] = out[column].map(
-                lambda x:
-                "N/A"
-                if _is_missing(x)
-                else fmt_number_vi(x, 2)
+                lambda x: "N/A" if _is_missing(x) else fmt_number_vi(x, 2)
             )
 
     st.dataframe(
@@ -287,7 +263,6 @@ def render_weight_table(df, hide_index=False):
     for column in out.columns:
         if column in TEXT_COLUMNS:
             continue
-
         if pd.api.types.is_numeric_dtype(out[column]):
             out[column] = out[column].map(fmt_percent_vi)
 
@@ -296,6 +271,152 @@ def render_weight_table(df, hide_index=False):
         use_container_width=True,
         hide_index=hide_index,
     )
+
+
+def prepare_asset_summary(df):
+    """Đưa mã cổ phiếu từ index thành cột rõ ràng."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+
+    out = df.copy()
+
+    if "Mã" not in out.columns:
+        index_name = out.index.name
+        out = out.reset_index()
+        source_name = index_name if index_name in out.columns else "index"
+        if source_name in out.columns:
+            out = out.rename(columns={source_name: "Mã"})
+
+    return out
+
+
+def annotate_scatter_figure(fig, labels):
+    """Gắn lại nhãn điểm trên các biểu đồ phân tán của danh mục."""
+    if fig is None or not labels:
+        return
+
+    offsets = [
+        (8, 10),
+        (8, -18),
+        (10, 22),
+        (10, -30),
+        (-105, 10),
+        (-120, -22),
+    ]
+
+    for ax in fig.axes:
+        title = ax.get_title().lower()
+        if not any(
+            key in title
+            for key in [
+                "rủi ro và lợi suất",
+                "mục tiêu lợi nhuận",
+                "markowitz",
+            ]
+        ):
+            continue
+
+        # Xóa nhãn cũ để tránh nhãn chồng lên nhau.
+        for txt in list(ax.texts):
+            try:
+                txt.remove()
+            except Exception:
+                pass
+
+        points = []
+        for collection in ax.collections:
+            try:
+                arr = collection.get_offsets()
+                if arr is None:
+                    continue
+                for point in np.asarray(arr):
+                    if len(point) >= 2 and np.all(np.isfinite(point[:2])):
+                        points.append((float(point[0]), float(point[1])))
+            except Exception:
+                continue
+
+        if not points:
+            continue
+
+        # Với đường biên Markowitz có thể có nhiều điểm frontier.
+        # Chỉ gắn nhãn số điểm tương ứng với danh mục chính.
+        count = min(len(points), len(labels))
+        for i in range(count):
+            x, y = points[i]
+            dx, dy = offsets[i % len(offsets)]
+            ax.annotate(
+                str(labels[i]),
+                (x, y),
+                xytext=(dx, dy),
+                textcoords="offset points",
+                fontsize=9,
+                bbox=dict(
+                    boxstyle="round,pad=0.20",
+                    facecolor="white",
+                    edgecolor="none",
+                    alpha=0.85,
+                ),
+            )
+
+
+def build_rolling_target_figure(results, target_return):
+    """Tạo biểu đồ lợi suất cuộn 12 tháng so với mục tiêu."""
+    returns = results.get("returns")
+    weights = results.get("weights")
+
+    if not isinstance(returns, pd.DataFrame) or returns.empty:
+        return None
+    if not isinstance(weights, pd.DataFrame) or weights.empty:
+        return None
+
+    rolling_rows = {}
+
+    for name in weights.columns:
+        try:
+            w = pd.to_numeric(weights[name], errors="coerce").fillna(0)
+            p_returns = returns.reindex(columns=w.index).fillna(0).dot(w)
+            rolling_rows[name] = (
+                (1 + p_returns)
+                .rolling(52)
+                .apply(np.prod, raw=True)
+                - 1
+            )
+        except Exception:
+            continue
+
+    if not rolling_rows:
+        return None
+
+    rolling_df = pd.DataFrame(rolling_rows).dropna(how="all")
+    if rolling_df.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(13, 6))
+
+    for col in rolling_df.columns:
+        ax.plot(
+            rolling_df.index,
+            rolling_df[col] * 100,
+            label=col,
+            linewidth=1.5,
+        )
+
+    ax.axhline(
+        target_return * 100,
+        linestyle="--",
+        linewidth=1.4,
+        label=f"Mục tiêu {target_return:.1%}",
+    )
+
+    ax.set_title("Lợi suất cuộn 12 tháng so với mục tiêu")
+    ax.set_xlabel("Thời gian")
+    ax.set_ylabel("Lợi suất cuộn 12 tháng (%)")
+    ax.legend(ncol=2, loc="best")
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+
+    return fig
+
 
 # ------------------------------------------------------------
 # CẤU HÌNH
@@ -362,7 +483,6 @@ risk_aversion_map = {
     "Cân bằng": 3.0,
     "Tăng trưởng": 1.0,
 }
-
 risk_aversion = risk_aversion_map[risk_profile]
 
 # ------------------------------------------------------------
@@ -371,11 +491,7 @@ risk_aversion = risk_aversion_map[risk_profile]
 
 st.subheader("2. ĐÒN BẨY")
 
-use_leverage = st.checkbox(
-    "Sử dụng đòn bẩy",
-    value=False,
-)
-
+use_leverage = st.checkbox("Sử dụng đòn bẩy", value=False)
 margin_table = None
 max_leverage = 1.0
 
@@ -386,7 +502,6 @@ tickers = list(dict.fromkeys([
 ]))
 
 if use_leverage:
-
     max_leverage = st.number_input(
         "Tổng vị thế tối đa",
         min_value=1.0,
@@ -414,10 +529,7 @@ if use_leverage:
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Mã": st.column_config.TextColumn(
-                "Mã",
-                disabled=True,
-            ),
+            "Mã": st.column_config.TextColumn("Mã", disabled=True),
             "Được cấp margin": st.column_config.SelectboxColumn(
                 "Được cấp margin",
                 options=["Không", "Có"],
@@ -453,7 +565,6 @@ if use_leverage:
             errors="coerce",
         ).fillna(0) / 100
     )
-
     margin_table["Lãi suất vay"] = (
         pd.to_numeric(
             margin_table["Lãi suất vay"],
@@ -466,7 +577,6 @@ if use_leverage:
 # ------------------------------------------------------------
 
 st.markdown("---")
-
 run_analysis = st.button(
     "CHẠY PHÂN TÍCH",
     type="primary",
@@ -474,7 +584,6 @@ run_analysis = st.button(
 )
 
 if run_analysis:
-
     if len(tickers) < 2:
         st.error("Cần ít nhất 2 mã cổ phiếu.")
         st.stop()
@@ -488,43 +597,29 @@ if run_analysis:
         st.stop()
 
     try:
-
         start_text = pd.Timestamp(start_date).strftime("%Y-%m-%d")
         end_text = pd.Timestamp(end_date).strftime("%Y-%m-%d")
 
-        with st.status(
-            "Đang thực hiện phân tích...",
-            expanded=True,
-        ) as status:
-
+        with st.status("Đang thực hiện phân tích...", expanded=True) as status:
             st.write("Đang xác thực API Vnstock...")
             auth = configure_vnstock(api_key)
-
             st.write("Đang lấy dữ liệu và chạy mô hình...")
 
-            # run_research hiện có các biểu đồ matplotlib.
-            # Tạm chặn plt.show để thu toàn bộ figure rồi hiển thị
-            # theo bố cục Streamlit.
             figures = []
-
             original_show = plt.show
 
             def capture_show(*args, **kwargs):
-                figures.extend(
-                    [
-                        plt.figure(num)
-                        for num in plt.get_fignums()
-                    ]
-                )
+                for num in plt.get_fignums():
+                    fig = plt.figure(num)
+                    if fig not in figures:
+                        figures.append(fig)
                 plt.close("all")
 
             plt.show = capture_show
-
             log_buffer = io.StringIO()
 
             try:
                 with contextlib.redirect_stdout(log_buffer):
-
                     results = run_research(
                         tickers=tickers,
                         start_date=start_text,
@@ -543,179 +638,98 @@ if run_analysis:
             finally:
                 plt.show = original_show
 
-            status.update(
-                label="Phân tích hoàn tất",
-                state="complete",
-            )
+            status.update(label="Phân tích hoàn tất", state="complete")
 
         st.success("Đã hoàn tất phân tích.")
 
         # ----------------------------------------------------
         # 3. TỔNG QUAN DOANH NGHIỆP
         # ----------------------------------------------------
-
-        company_table = results.get(
-            "company_table",
-            pd.DataFrame(),
-        )
-
+        company_table = results.get("company_table", pd.DataFrame())
         st.subheader("3. TỔNG QUAN DOANH NGHIỆP")
-
         if not company_table.empty:
             render_df(company_table, hide_index=True)
 
         # ----------------------------------------------------
         # 4. VNINDEX
         # ----------------------------------------------------
-
         st.subheader("4. VNINDEX")
-
-        benchmark_summary = results.get(
-            "benchmark_summary",
-            pd.DataFrame(),
-        )
-
+        benchmark_summary = results.get("benchmark_summary", pd.DataFrame())
         if not benchmark_summary.empty:
             render_df(benchmark_summary, hide_index=True)
 
         # ----------------------------------------------------
         # 5. PHÂN TÍCH TỪNG CỔ PHIẾU
         # ----------------------------------------------------
-
         st.subheader("5. PHÂN TÍCH TỪNG CỔ PHIẾU")
-
-        asset_summary = results.get(
-            "asset_summary",
-            pd.DataFrame(),
+        asset_summary = prepare_asset_summary(
+            results.get("asset_summary", pd.DataFrame())
         )
-
         if not asset_summary.empty:
             render_df(asset_summary, hide_index=True)
 
         st.markdown("**Ma trận tương quan**")
-
-        correlation = results.get(
-            "correlation",
-            pd.DataFrame(),
-        )
-
+        correlation = results.get("correlation", pd.DataFrame())
         if not correlation.empty:
             render_df(correlation, hide_index=True)
 
         # ----------------------------------------------------
         # 6. TỐI ƯU DANH MỤC
         # ----------------------------------------------------
-
         st.subheader("6. TỐI ƯU DANH MỤC")
-
-        portfolio_table = results.get(
-            "portfolio_table",
-            pd.DataFrame(),
-        )
-
+        portfolio_table = results.get("portfolio_table", pd.DataFrame())
         if not portfolio_table.empty:
             render_df(portfolio_table, hide_index=True)
 
-        weights = results.get(
-            "weights",
-            pd.DataFrame(),
-        )
-
+        weights = results.get("weights", pd.DataFrame())
         if not weights.empty:
             st.markdown("**Phân bổ tỷ trọng**")
             render_weight_table(weights, hide_index=False)
 
-        # ----------------------------------------------------
-        # 6.1 / 6.2 ĐÒN BẨY
-        # ----------------------------------------------------
-
         if use_leverage:
-
             st.subheader("6.1. PHÂN TÍCH CÓ ĐÒN BẨY")
-
-            levered_table = results.get(
-                "levered_table",
-                pd.DataFrame(),
-            )
-
+            levered_table = results.get("levered_table", pd.DataFrame())
             if not levered_table.empty:
                 render_df(levered_table, hide_index=True)
 
             st.subheader("6.2. PHÂN BỔ DANH MỤC CÓ ĐÒN BẨY")
-
-            levered_alloc = results.get(
-                "levered_alloc",
-                pd.DataFrame(),
-            )
-
+            levered_alloc = results.get("levered_alloc", pd.DataFrame())
             if not levered_alloc.empty:
                 render_df(levered_alloc, hide_index=True)
 
-        # ----------------------------------------------------
-        # 6.3 TARGET RETURN
-        # ----------------------------------------------------
-
         st.subheader("6.3. MỤC TIÊU LỢI NHUẬN")
-
-        target_summary = results.get(
-            "target_summary",
-            None,
-        )
-
+        target_summary = results.get("target_summary")
         if isinstance(target_summary, pd.DataFrame) and not target_summary.empty:
             render_df(target_summary, hide_index=True)
 
-        target_check = results.get(
-            "target_check",
-            pd.DataFrame(),
-        )
-
+        target_check = results.get("target_check", pd.DataFrame())
         if not target_check.empty:
             render_df(target_check, hide_index=True)
 
         # ----------------------------------------------------
         # 7. SO SÁNH VỚI VNINDEX
         # ----------------------------------------------------
-
         st.subheader("7. SO SÁNH VỚI VNINDEX")
-
-        comparison = results.get(
-            "comparison",
-            pd.DataFrame(),
-        )
-
+        comparison = results.get("comparison", pd.DataFrame())
         if not comparison.empty:
             render_df(comparison, hide_index=True)
 
         # ----------------------------------------------------
-        # 8. CÁC CHỈ TIÊU RỦI RO
+        # 8. PHÂN TÍCH RỦI RO
         # ----------------------------------------------------
-
         st.subheader("8. PHÂN TÍCH RỦI RO")
 
-        attainment = results.get(
-            "attainment",
-            pd.DataFrame(),
-        )
-
+        attainment = results.get("attainment", pd.DataFrame())
         if isinstance(attainment, pd.DataFrame) and not attainment.empty:
             st.markdown("**Khả năng đạt mục tiêu**")
             render_df(attainment, hide_index=True)
 
-        concentration = results.get(
-            "concentration",
-            pd.DataFrame(),
-        )
-
+        concentration = results.get("concentration", pd.DataFrame())
         if isinstance(concentration, pd.DataFrame) and not concentration.empty:
             st.markdown("**Mức độ tập trung danh mục**")
             render_df(concentration, hide_index=True)
 
-        risk_diagnostics = results.get(
-            "risk_diagnostics",
-            pd.DataFrame(),
-        )
-
+        risk_diagnostics = results.get("risk_diagnostics", pd.DataFrame())
         if isinstance(risk_diagnostics, pd.DataFrame) and not risk_diagnostics.empty:
             st.markdown("**Max Drawdown và thời gian phục hồi**")
             render_df(risk_diagnostics, hide_index=True)
@@ -723,25 +737,69 @@ if run_analysis:
         # ----------------------------------------------------
         # 9. KẾT LUẬN ĐỊNH LƯỢNG
         # ----------------------------------------------------
-
         st.subheader("9. ĐÁNH GIÁ THEO MỤC TIÊU NHÀ ĐẦU TƯ")
-
-        conclusion = results.get(
-            "conclusion",
-            pd.DataFrame(),
-        )
-
+        conclusion = results.get("conclusion", pd.DataFrame())
         if isinstance(conclusion, pd.DataFrame) and not conclusion.empty:
             render_df(conclusion, hide_index=True)
 
         # ----------------------------------------------------
         # 10. BIỂU ĐỒ
         # ----------------------------------------------------
-
         st.subheader("10. BIỂU ĐỒ")
 
-        for i, fig in enumerate(figures, start=1):
+        comparison_labels = (
+            comparison["Danh mục"].astype(str).tolist()
+            if "Danh mục" in comparison.columns
+            else []
+        )
+        conclusion_labels = (
+            conclusion["Danh mục"].astype(str).tolist()
+            if isinstance(conclusion, pd.DataFrame)
+            and "Danh mục" in conclusion.columns
+            else []
+        )
 
+        # Thay biểu đồ scatter mục tiêu hiện tại bằng rolling return 12 tháng.
+        rolling_target_fig = build_rolling_target_figure(
+            results,
+            float(target_return),
+        )
+
+        processed_figures = []
+        replaced_target_chart = False
+
+        for fig in figures:
+            title = ""
+            if fig.axes:
+                title = fig.axes[0].get_title().lower()
+
+            if "danh mục so với mục tiêu lợi nhuận" in title:
+                if rolling_target_fig is not None and not replaced_target_chart:
+                    processed_figures.append(rolling_target_fig)
+                    replaced_target_chart = True
+                continue
+
+            if "so sánh rủi ro và lợi suất" in title:
+                annotate_scatter_figure(fig, comparison_labels)
+            elif "markowitz" in title:
+                labels = [
+                    x for x in [
+                        "Naive",
+                        "Minimum Variance",
+                        "Optimal Risky",
+                        "Maximum Return",
+                        "Complete Portfolio",
+                    ]
+                    if x in comparison_labels
+                ]
+                annotate_scatter_figure(fig, labels)
+
+            processed_figures.append(fig)
+
+        if rolling_target_fig is not None and not replaced_target_chart:
+            processed_figures.append(rolling_target_fig)
+
+        for fig in processed_figures:
             st.pyplot(
                 fig,
                 clear_figure=True,
@@ -751,19 +809,12 @@ if run_analysis:
         # ----------------------------------------------------
         # LOG
         # ----------------------------------------------------
-
         with st.expander("Thông tin xử lý"):
-
             log_text = log_buffer.getvalue().strip()
-
             if log_text:
                 st.text(log_text)
             else:
                 st.write("Không có thông báo bổ sung.")
 
     except Exception as e:
-
-        st.error(
-            f"{type(e).__name__}: {str(e)}"
-        )
-
+        st.error(f"{type(e).__name__}: {str(e)}")
