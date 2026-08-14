@@ -58,14 +58,7 @@ _core_run_research = _core.run_research
 
 
 def _annotate_comparison_figures():
-    """Đảm bảo biểu đồ so sánh danh mục luôn có tên điểm."""
-    portfolio_names = [
-        "Naive",
-        "Minimum Variance",
-        "Optimal Risky",
-        "Maximum Return",
-        "Complete Portfolio",
-    ]
+    portfolio_names = ["Naive", "Minimum Variance", "Optimal Risky", "Maximum Return", "Complete Portfolio"]
     for fig_num in plt.get_fignums():
         fig = plt.figure(fig_num)
         for ax in fig.axes:
@@ -80,21 +73,12 @@ def _annotate_comparison_figures():
                         offsets.append((float(value[0]), float(value[1])))
                 except Exception:
                     continue
-            if not offsets:
-                continue
-            if len(ax.texts) >= len(offsets):
+            if not offsets or len(ax.texts) >= len(offsets):
                 continue
             for i, (x, y) in enumerate(offsets):
                 if i >= len(portfolio_names):
                     break
-                ax.annotate(
-                    portfolio_names[i],
-                    (x, y),
-                    xytext=(8, 8),
-                    textcoords="offset points",
-                    fontsize=9,
-                    bbox=dict(boxstyle="round,pad=0.2", alpha=0.7),
-                )
+                ax.annotate(portfolio_names[i], (x, y), xytext=(8, 8), textcoords="offset points", fontsize=9, bbox=dict(boxstyle="round,pad=0.2", alpha=0.7))
 
 
 def build_advanced_portfolio_analysis(returns, portfolio_returns, benchmark_returns=None, company_table=None, risk_free_rate=0.0, target_return=0.15):
@@ -135,7 +119,6 @@ def build_advanced_portfolio_analysis(returns, portfolio_returns, benchmark_retu
 
 
 def _daily_risk_free_return(annual_rate):
-    """Quy đổi lãi suất phi rủi ro năm sang lợi suất ngày ghép lãi."""
     try:
         return (1.0 + float(annual_rate)) ** (1.0 / 252.0) - 1.0
     except Exception:
@@ -143,66 +126,38 @@ def _daily_risk_free_return(annual_rate):
 
 
 def _portfolio_return_from_item(item, returns, risk_free_rate=0.0, name=None):
-    """Tạo đúng chuỗi lợi suất của từng danh mục từ chính nghiệm tối ưu.
-
-    Complete Portfolio có phần tài sản phi rủi ro không nằm trong ma trận cổ phiếu,
-    vì vậy phải cộng phần vốn đó vào lợi suất phi rủi ro. Các danh mục còn lại
-    được tính hoàn toàn từ vector tỷ trọng cổ phiếu.
-    """
     if item is None or not isinstance(item, (tuple, list)) or len(item) < 1:
         return pd.Series(dtype=float)
-
     raw_weights = item[0]
     if raw_weights is None:
         return pd.Series(dtype=float)
-
     try:
         w = np.asarray(raw_weights, dtype=float).reshape(-1)
     except Exception:
         return pd.Series(dtype=float)
-
     if len(w) != returns.shape[1]:
         return pd.Series(dtype=float)
-
     asset_returns = returns.mul(w, axis=1).sum(axis=1)
-
     if name == "Complete Portfolio":
         risk_free_weight = max(1.0 - float(w.sum()), 0.0)
-        rf_daily = _daily_risk_free_return(risk_free_rate)
-        asset_returns = asset_returns + risk_free_weight * rf_daily
-
+        asset_returns = asset_returns + risk_free_weight * _daily_risk_free_return(risk_free_rate)
     return pd.to_numeric(asset_returns, errors="coerce").dropna()
 
 
 def _build_portfolio_returns(results):
-    """Tạo chuỗi lợi suất riêng cho từng danh mục từ portfolio_results.
-
-    Không dùng một chuỗi lợi suất chung cho toàn bộ danh mục. Mỗi nghiệm
-    tối ưu có vector tỷ trọng riêng và vì vậy phải có chuỗi lợi suất riêng.
-    """
     returns = results.get("returns")
     portfolio_results = results.get("portfolio_results", {})
     risk_free_rate = results.get("risk_free_rate", 0.0)
     portfolio_returns = {}
-
-    if not isinstance(returns, pd.DataFrame) or returns.empty:
+    if not isinstance(returns, pd.DataFrame) or returns.empty or not isinstance(portfolio_results, dict):
         return portfolio_returns
-    if not isinstance(portfolio_results, dict):
-        return portfolio_returns
-
     for name, item in portfolio_results.items():
         try:
-            p_returns = _portfolio_return_from_item(
-                item,
-                returns,
-                risk_free_rate=risk_free_rate,
-                name=name,
-            )
+            p_returns = _portfolio_return_from_item(item, returns, risk_free_rate=risk_free_rate, name=name)
             if not p_returns.empty:
                 portfolio_returns[name] = p_returns
         except Exception:
             continue
-
     return portfolio_returns
 
 
@@ -210,14 +165,7 @@ def _run_all_advanced(returns, portfolio_returns, benchmark_returns, company_tab
     analyses = {}
     for name, p_returns in portfolio_returns.items():
         try:
-            analysis = build_advanced_portfolio_analysis(
-                returns=returns,
-                portfolio_returns=p_returns,
-                benchmark_returns=benchmark_returns,
-                company_table=company_table,
-                risk_free_rate=float(risk_free_rate),
-                target_return=float(target_return),
-            )
+            analysis = build_advanced_portfolio_analysis(returns, p_returns, benchmark_returns, company_table, float(risk_free_rate), float(target_return))
             analysis["_portfolio_name"] = name
             analysis["_portfolio_returns"] = p_returns
             analysis["_data_frequency"] = "Ngày"
@@ -229,19 +177,15 @@ def _run_all_advanced(returns, portfolio_returns, benchmark_returns, company_tab
 
 def run_research(*args, **kwargs):
     global _LAST_RESULTS
-
     original_show = plt.show
-
     def show_with_labels(*show_args, **show_kwargs):
         _annotate_comparison_figures()
         return original_show(*show_args, **show_kwargs)
-
     plt.show = show_with_labels
     try:
         results = _core_run_research(*args, **kwargs)
     finally:
         plt.show = original_show
-
     if not isinstance(results, dict):
         return results
 
@@ -249,18 +193,14 @@ def run_research(*args, **kwargs):
     rf = kwargs.get("risk_free_rate", results.get("risk_free_rate", 0.0))
     target = kwargs.get("target_return", results.get("target_return", 0.15))
     results["risk_free_rate"] = float(rf)
-
     portfolio_returns = _build_portfolio_returns(results)
     results["portfolio_returns"] = portfolio_returns
 
-    all_advanced = _run_all_advanced(
-        returns=returns,
-        portfolio_returns=portfolio_returns,
-        benchmark_returns=results.get("benchmark_returns"),
-        company_table=results.get("company_table"),
-        risk_free_rate=float(rf),
-        target_return=float(target),
-    )
+    results["_advanced_source_returns"] = returns
+    results["_advanced_source_benchmark_returns"] = results.get("benchmark_returns")
+    results["_advanced_source_company_table"] = results.get("company_table")
+
+    all_advanced = _run_all_advanced(returns, portfolio_returns, results.get("benchmark_returns"), results.get("company_table"), float(rf), float(target))
     results["advanced_portfolio_analysis_by_portfolio"] = all_advanced
 
     requested_name = kwargs.get("advanced_portfolio_name")
@@ -288,14 +228,12 @@ def run_research(*args, **kwargs):
     else:
         results["advanced_portfolio_analysis"] = {}
         results["advanced_portfolio_analysis_error"] = "Không có danh mục hợp lệ để đánh giá."
-
     _LAST_RESULTS = results
     return results
 
 
 def get_last_results():
     return _LAST_RESULTS
-
 
 run_advanced_portfolio_analysis = build_advanced_portfolio_analysis
 configure_vnstock = _core.configure_vnstock
