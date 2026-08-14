@@ -16,7 +16,6 @@ def _fmt_num(x):
 
 
 def build_portfolio_evaluation(advanced_results, target_return=0.15):
-    """Tạo đánh giá từ các kết quả đã tính, không gọi dữ liệu mới."""
     robustness = advanced_results.get("robustness", pd.DataFrame())
     active = advanced_results.get("active_analysis", pd.DataFrame())
     var = advanced_results.get("var_analysis", pd.DataFrame())
@@ -166,42 +165,38 @@ def build_portfolio_evaluation(advanced_results, target_return=0.15):
     }
 
 
-def _render_advanced_fragment(advanced_results, target_return=0.15):
-    """Phần tương tác của mục 11 chạy độc lập khi đổi danh mục.
+def _render_advanced_fragment():
+    """Chỉ cập nhật mục 11 khi người dùng đổi danh mục."""
+    advanced_results = st.session_state.get("advanced_results")
+    target_return = st.session_state.get("advanced_target_return", 0.15)
 
-    Streamlit fragment giúp thay đổi bộ chọn không chạy lại toàn bộ ứng dụng
-    và không gọi lại run_research hay truy vấn dữ liệu.
-    """
+    if not isinstance(advanced_results, dict) or not advanced_results:
+        st.info("Không đủ dữ liệu hiện có để thực hiện phân tích nâng cao.")
+        return
+
     all_portfolios = advanced_results.get("_all_portfolios")
     if not isinstance(all_portfolios, dict) or not all_portfolios:
-        all_portfolios = {
-            advanced_results.get("_portfolio_name", "Complete Portfolio"): advanced_results
-        }
+        all_portfolios = {advanced_results.get("_portfolio_name", "Complete Portfolio"): advanced_results}
 
-    portfolio_names = [
-        name for name, value in all_portfolios.items()
-        if isinstance(value, dict) and not value.get("error")
-    ]
+    portfolio_names = [name for name, value in all_portfolios.items() if isinstance(value, dict) and not value.get("error")]
     if not portfolio_names:
         st.warning("Không có danh mục hợp lệ để đánh giá.")
         return
 
-    default_name = advanced_results.get("_portfolio_name", portfolio_names[0])
+    default_name = st.session_state.get("advanced_selected_portfolio")
     if default_name not in portfolio_names:
-        default_name = portfolio_names[0]
+        default_name = advanced_results.get("_portfolio_name", portfolio_names[0])
+        if default_name not in portfolio_names:
+            default_name = portfolio_names[0]
+        st.session_state["advanced_selected_portfolio"] = default_name
 
     st.markdown("**Danh mục được đánh giá**")
-    selected_name = st.selectbox(
-        "Chọn danh mục để phân tích sâu",
-        portfolio_names,
-        index=portfolio_names.index(default_name),
-        key="advanced_portfolio_selector"
-    )
+    selected_name = st.selectbox("Chọn danh mục để phân tích sâu", portfolio_names, key="advanced_portfolio_selector")
+    st.session_state["advanced_selected_portfolio"] = selected_name
 
     selected_results = dict(all_portfolios[selected_name])
     selected_results["_portfolio_name"] = selected_name
-    selected_results["_target_return"] = advanced_results.get("_target_return", target_return)
-    selected_target = selected_results["_target_return"]
+    selected_results["_target_return"] = target_return
 
     st.markdown(f"**Danh mục được đánh giá: {selected_name}**")
     st.caption("Đây là danh mục được lựa chọn để đánh giá, không phải danh mục mặc định là tốt nhất.")
@@ -221,18 +216,13 @@ def _render_advanced_fragment(advanced_results, target_return=0.15):
         if isinstance(table, pd.DataFrame) and not table.empty:
             st.dataframe(table, use_container_width=True, hide_index=False)
         else:
-            error_key = f"{key}_error"
-            error = selected_results.get(error_key)
+            error = selected_results.get(f"{key}_error")
             if error:
                 st.warning(f"Không thể thực hiện: {error}")
             else:
                 st.info("Không đủ dữ liệu hiện có để thực hiện phân tích này.")
 
-    evaluation = build_portfolio_evaluation(
-        selected_results,
-        target_return=float(selected_target)
-    )
-
+    evaluation = build_portfolio_evaluation(selected_results, target_return=float(target_return))
     st.markdown("---")
     st.markdown("**11.7. ĐÁNH GIÁ DANH MỤC ĐƯỢC LỰA CHỌN**")
     st.markdown(f"### Đánh giá tổng thể: {evaluation['overall']}")
@@ -250,14 +240,16 @@ def _render_advanced_fragment(advanced_results, target_return=0.15):
 
 
 def render_advanced_section(advanced_results, title=None, target_return=0.15):
-    """Hiển thị mục 11. Bộ chọn chỉ rerun fragment, không chạy lại toàn bộ app."""
+    """Hiển thị mục 11 và lưu dữ liệu vào session để fragment luôn đọc bộ kết quả mới nhất."""
     if not isinstance(advanced_results, dict) or not advanced_results:
         st.info("Không đủ dữ liệu hiện có để thực hiện phân tích nâng cao.")
         return
 
+    st.session_state["advanced_results"] = advanced_results
+    st.session_state["advanced_target_return"] = target_return
+
     if hasattr(st, "fragment"):
         advanced_fragment = st.fragment(_render_advanced_fragment)
-        advanced_fragment(advanced_results, target_return=target_return)
+        advanced_fragment()
     else:
-        # Tương thích với phiên bản Streamlit cũ chưa có fragment.
-        _render_advanced_fragment(advanced_results, target_return=target_return)
+        _render_advanced_fragment()
