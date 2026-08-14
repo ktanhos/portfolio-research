@@ -134,21 +134,75 @@ def build_advanced_portfolio_analysis(returns, portfolio_returns, benchmark_retu
     return result
 
 
+def _daily_risk_free_return(annual_rate):
+    """Quy đổi lãi suất phi rủi ro năm sang lợi suất ngày ghép lãi."""
+    try:
+        return (1.0 + float(annual_rate)) ** (1.0 / 252.0) - 1.0
+    except Exception:
+        return 0.0
+
+
+def _portfolio_return_from_item(item, returns, risk_free_rate=0.0, name=None):
+    """Tạo đúng chuỗi lợi suất của từng danh mục từ chính nghiệm tối ưu.
+
+    Complete Portfolio có phần tài sản phi rủi ro không nằm trong ma trận cổ phiếu,
+    vì vậy phải cộng phần vốn đó vào lợi suất phi rủi ro. Các danh mục còn lại
+    được tính hoàn toàn từ vector tỷ trọng cổ phiếu.
+    """
+    if item is None or not isinstance(item, (tuple, list)) or len(item) < 1:
+        return pd.Series(dtype=float)
+
+    raw_weights = item[0]
+    if raw_weights is None:
+        return pd.Series(dtype=float)
+
+    try:
+        w = np.asarray(raw_weights, dtype=float).reshape(-1)
+    except Exception:
+        return pd.Series(dtype=float)
+
+    if len(w) != returns.shape[1]:
+        return pd.Series(dtype=float)
+
+    asset_returns = returns.mul(w, axis=1).sum(axis=1)
+
+    if name == "Complete Portfolio":
+        risk_free_weight = max(1.0 - float(w.sum()), 0.0)
+        rf_daily = _daily_risk_free_return(risk_free_rate)
+        asset_returns = asset_returns + risk_free_weight * rf_daily
+
+    return pd.to_numeric(asset_returns, errors="coerce").dropna()
+
+
 def _build_portfolio_returns(results):
+    """Tạo chuỗi lợi suất riêng cho từng danh mục từ portfolio_results.
+
+    Không dùng một chuỗi lợi suất chung cho toàn bộ danh mục. Mỗi nghiệm
+    tối ưu có vector tỷ trọng riêng và vì vậy phải có chuỗi lợi suất riêng.
+    """
     returns = results.get("returns")
     portfolio_results = results.get("portfolio_results", {})
+    risk_free_rate = results.get("risk_free_rate", 0.0)
     portfolio_returns = {}
-    if isinstance(returns, pd.DataFrame) and not returns.empty:
-        for name, item in portfolio_results.items():
-            try:
-                if item is None or item[0] is None:
-                    continue
-                w = np.asarray(item[0], dtype=float)
-                if len(w) != returns.shape[1]:
-                    continue
-                portfolio_returns[name] = returns.mul(w, axis=1).sum(axis=1).dropna()
-            except Exception:
-                continue
+
+    if not isinstance(returns, pd.DataFrame) or returns.empty:
+        return portfolio_returns
+    if not isinstance(portfolio_results, dict):
+        return portfolio_returns
+
+    for name, item in portfolio_results.items():
+        try:
+            p_returns = _portfolio_return_from_item(
+                item,
+                returns,
+                risk_free_rate=risk_free_rate,
+                name=name,
+            )
+            if not p_returns.empty:
+                portfolio_returns[name] = p_returns
+        except Exception:
+            continue
+
     return portfolio_returns
 
 
@@ -156,7 +210,7 @@ def _run_all_advanced(returns, portfolio_returns, benchmark_returns, company_tab
     analyses = {}
     for name, p_returns in portfolio_returns.items():
         try:
-            analyses[name] = build_advanced_portfolio_analysis(
+            analysis = build_advanced_portfolio_analysis(
                 returns=returns,
                 portfolio_returns=p_returns,
                 benchmark_returns=benchmark_returns,
@@ -164,8 +218,12 @@ def _run_all_advanced(returns, portfolio_returns, benchmark_returns, company_tab
                 risk_free_rate=float(risk_free_rate),
                 target_return=float(target_return),
             )
+            analysis["_portfolio_name"] = name
+            analysis["_portfolio_returns"] = p_returns
+            analysis["_data_frequency"] = "Ngày"
+            analyses[name] = analysis
         except Exception as exc:
-            analyses[name] = {"error": str(exc)}
+            analyses[name] = {"error": str(exc), "_portfolio_name": name}
     return analyses
 
 
@@ -188,11 +246,12 @@ def run_research(*args, **kwargs):
         return results
 
     returns = results.get("returns")
+    rf = kwargs.get("risk_free_rate", results.get("risk_free_rate", 0.0))
+    target = kwargs.get("target_return", results.get("target_return", 0.15))
+    results["risk_free_rate"] = float(rf)
+
     portfolio_returns = _build_portfolio_returns(results)
     results["portfolio_returns"] = portfolio_returns
-
-    rf = kwargs.get("risk_free_rate", 0.0)
-    target = kwargs.get("target_return", results.get("target_return", 0.15))
 
     all_advanced = _run_all_advanced(
         returns=returns,
