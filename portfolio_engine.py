@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 
 import portfolio_engine_core as _core
 from margin_patch import install_margin_patch
@@ -54,6 +55,46 @@ def income_row_value(income, keywords, exclude_keywords=None):
 
 _core.income_row_value = income_row_value
 _core_run_research = _core.run_research
+
+
+def _annotate_comparison_figures():
+    """Đảm bảo biểu đồ so sánh danh mục luôn có tên điểm."""
+    portfolio_names = [
+        "Naive",
+        "Minimum Variance",
+        "Optimal Risky",
+        "Maximum Return",
+        "Complete Portfolio",
+    ]
+    for fig_num in plt.get_fignums():
+        fig = plt.figure(fig_num)
+        for ax in fig.axes:
+            title = str(ax.get_title()).lower()
+            if "mục tiêu" not in title and "so sánh rủi ro" not in title and "so sánh" not in title:
+                continue
+            offsets = []
+            for collection in ax.collections:
+                try:
+                    values = collection.get_offsets()
+                    for value in values:
+                        offsets.append((float(value[0]), float(value[1])))
+                except Exception:
+                    continue
+            if not offsets:
+                continue
+            if len(ax.texts) >= len(offsets):
+                continue
+            for i, (x, y) in enumerate(offsets):
+                if i >= len(portfolio_names):
+                    break
+                ax.annotate(
+                    portfolio_names[i],
+                    (x, y),
+                    xytext=(8, 8),
+                    textcoords="offset points",
+                    fontsize=9,
+                    bbox=dict(boxstyle="round,pad=0.2", alpha=0.7),
+                )
 
 
 def build_advanced_portfolio_analysis(returns, portfolio_returns, benchmark_returns=None, company_table=None, risk_free_rate=0.0, target_return=0.15):
@@ -130,7 +171,19 @@ def _run_all_advanced(returns, portfolio_returns, benchmark_returns, company_tab
 
 def run_research(*args, **kwargs):
     global _LAST_RESULTS
-    results = _core_run_research(*args, **kwargs)
+
+    original_show = plt.show
+
+    def show_with_labels(*show_args, **show_kwargs):
+        _annotate_comparison_figures()
+        return original_show(*show_args, **show_kwargs)
+
+    plt.show = show_with_labels
+    try:
+        results = _core_run_research(*args, **kwargs)
+    finally:
+        plt.show = original_show
+
     if not isinstance(results, dict):
         return results
 
@@ -151,9 +204,6 @@ def run_research(*args, **kwargs):
     )
     results["advanced_portfolio_analysis_by_portfolio"] = all_advanced
 
-    # CFA khong dinh nghia mot danh muc mac dinh la danh muc tot nhat.
-    # Complete Portfolio la danh muc mac dinh duoc danh gia vi no phan anh
-    # su ket hop giua danh muc rui ro va khau vi rui ro cua nha dau tu.
     requested_name = kwargs.get("advanced_portfolio_name")
     if requested_name in all_advanced and not all_advanced[requested_name].get("error"):
         selected_name = requested_name
@@ -173,11 +223,12 @@ def run_research(*args, **kwargs):
         selected_analysis["_portfolio_name"] = selected_name
         selected_analysis["_target_return"] = float(target)
         selected_analysis["_risk_profile"] = kwargs.get("risk_profile")
+        selected_analysis["_all_portfolios"] = all_advanced
         results["advanced_portfolio_analysis"] = selected_analysis
         results["advanced_portfolio_name"] = selected_name
     else:
         results["advanced_portfolio_analysis"] = {}
-        results["advanced_portfolio_analysis_error"] = "Khong co danh muc hop le de danh gia."
+        results["advanced_portfolio_analysis_error"] = "Không có danh mục hợp lệ để đánh giá."
 
     _LAST_RESULTS = results
     return results
