@@ -11,16 +11,10 @@ from portfolio_engine import (
     configure_vnstock,
     run_research,
     clean_margin_table,
-    run_advanced_portfolio_analysis,
 )
 from advanced_app import render_advanced_section
 
-st.set_page_config(
-    page_title="Portfolio Research",
-    page_icon="📊",
-    layout="wide",
-)
-
+st.set_page_config(page_title="Portfolio Research", page_icon="📊", layout="wide")
 st.title("PORTFOLIO RESEARCH")
 st.caption("Phân tích và tối ưu danh mục cổ phiếu Việt Nam")
 
@@ -279,37 +273,20 @@ if run_analysis:
         if isinstance(conclusion, pd.DataFrame) and not conclusion.empty:
             render_df(conclusion)
 
-        # ----------------------------------------------------
-        # 10. PHÂN TÍCH NÂNG CAO
-        # ----------------------------------------------------
-        # Không gọi thêm API. Chọn danh mục trung tâm để phân tích sâu.
-        portfolio_returns = None
-        if isinstance(portfolio_table, pd.DataFrame) and not portfolio_table.empty:
-            candidate = "Complete Portfolio" if "Complete Portfolio" in portfolio_table["Danh mục"].values else portfolio_table.iloc[0]["Danh mục"]
-            portfolio_result = results.get("portfolio_results", {}).get(candidate)
-            if portfolio_result is not None and portfolio_result[0] is not None:
-                returns_df = results.get("returns", pd.DataFrame())
-                if isinstance(returns_df, pd.DataFrame) and not returns_df.empty:
-                    portfolio_returns = returns_df @ portfolio_result[0]
-
-        if portfolio_returns is not None:
-            advanced_results = run_advanced_portfolio_analysis(
-                returns=results.get("returns", pd.DataFrame()),
-                portfolio_returns=portfolio_returns,
-                benchmark_returns=results.get("benchmark_returns"),
-                company_table=company_table,
-                risk_free_rate=float(risk_free_rate),
-                target_return=float(target_return),
-            )
-            render_advanced_section(advanced_results)
-        else:
-            st.subheader("10. PHÂN TÍCH NÂNG CAO")
-            st.info("Không đủ dữ liệu hiện có để thực hiện phân tích nâng cao.")
-
-        # Biểu đồ được engine tạo trong bộ nhớ, không truy vấn thêm dữ liệu.
-        st.subheader("11. BIỂU ĐỒ")
+        st.subheader("10. BIỂU ĐỒ")
         for fig in figures:
             st.pyplot(fig, clear_figure=True, use_container_width=True)
+
+        st.subheader("11. PHÂN TÍCH NÂNG CAO")
+        advanced_results = results.get("advanced_portfolio_analysis")
+        if isinstance(advanced_results, dict) and advanced_results:
+            render_advanced_section(advanced_results)
+        else:
+            error = results.get("advanced_portfolio_analysis_error")
+            if error:
+                st.warning(f"Không thể tạo phân tích nâng cao: {error}")
+            else:
+                st.info("Không đủ dữ liệu hiện có để thực hiện phân tích nâng cao.")
 
         with st.expander("Thông tin xử lý"):
             log_text = log_buffer.getvalue().strip()
