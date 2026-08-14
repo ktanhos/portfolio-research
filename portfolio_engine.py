@@ -6,6 +6,14 @@ from input_normalizer import (
     normalize_company_dataframe,
     normalize_income_dataframe,
 )
+from advanced_portfolio import (
+    factor_proxy_analysis,
+    multifactor_regression,
+    var_analysis,
+    active_analysis,
+    robustness_analysis,
+    walk_forward_analysis,
+)
 
 # Patch margin an toàn trước khi xuất API của engine.
 install_margin_patch(_core)
@@ -20,8 +28,6 @@ def get_company_info(tickers, prices=None):
     df = _original_get_company_info(tickers, prices=prices)
     df = normalize_company_dataframe(df)
 
-    # Một số phiên bản nguồn trả P/E theo đơn vị phần nghìn.
-    # Ví dụ 33766 thực chất là 33,766 lần.
     if isinstance(df, pd.DataFrame) and "P/E" in df.columns:
         pe = pd.to_numeric(df["P/E"], errors="coerce")
         mask = pe.abs() > 1000
@@ -39,15 +45,7 @@ _original_income_row_value = _core.income_row_value
 
 
 def income_row_value(income, keywords, exclude_keywords=None):
-    """
-    Đọc doanh thu/LNST sau khi chuẩn hóa đơn vị tiền.
-
-    Thứ tự ưu tiên:
-    1. unit_multiplier do Vnstock cung cấp.
-    2. unit do Vnstock cung cấp.
-    3. Quy tắc dự phòng của phiên bản V21 đối với dữ liệu cũ
-       không có metadata đơn vị.
-    """
+    """Đọc doanh thu và LNST sau khi chuẩn hóa đơn vị tiền."""
     if income is None or not isinstance(income, pd.DataFrame) or income.empty:
         return _original_income_row_value(
             income,
@@ -56,7 +54,6 @@ def income_row_value(income, keywords, exclude_keywords=None):
         )
 
     normalized = normalize_income_dataframe(income)
-
     has_unit_metadata = False
     for col in ("unit_multiplier", "unit"):
         if col in normalized.columns:
@@ -80,63 +77,80 @@ def income_row_value(income, keywords, exclude_keywords=None):
 _core.income_row_value = income_row_value
 
 # ------------------------------------------------------------
-# BẢNG DOANH NGHIỆP: GIỮ RÕ NĂM CỦA BCTC
+# NÂNG CẤP ANALYTICS DÙNG DỮ LIỆU SẴN CÓ
 # ------------------------------------------------------------
-_original_build_company_table = _core.build_company_table
 
+def build_advanced_portfolio_analysis(
+    returns,
+    portfolio_returns,
+    benchmark_returns=None,
+    company_table=None,
+    risk_free_rate=0.0,
+    target_return=0.15,
+):
+    """Chỉ dùng dữ liệu đã có trong lần chạy hiện tại.
 
-def build_company_table(tickers, prices, include_company, include_income):
-    table = _original_build_company_table(
-        tickers,
-        prices,
-        include_company,
-        include_income,
-    )
-
-    if not include_income or not isinstance(table, pd.DataFrame) or table.empty:
-        return table
+    Không gọi thêm API, không truy vấn nguồn dữ liệu bên ngoài.
+    """
+    result = {}
 
     try:
-        income = _core.get_income_summary(tickers)
-        year_cols = [c for c in ["Mã", "Năm doanh thu", "Năm LNST"] if c in income.columns]
-
-        if len(year_cols) == 3:
-            years = income[year_cols].copy()
-            table = table.merge(years, on="Mã", how="left")
-
-            table["Doanh thu gần nhất"] = pd.to_numeric(
-                table["Doanh thu gần nhất"], errors="coerce"
-            )
-            table["LNST gần nhất"] = pd.to_numeric(
-                table["LNST gần nhất"], errors="coerce"
-            )
-
-            table["Doanh thu gần nhất"] = table.apply(
-                lambda r: r["Doanh thu gần nhất"], axis=1
-            )
-
-            ordered = [
-                "Mã", "Ngành", "Số CP lưu hành", "Vốn hóa",
-                "P/E", "P/B", "EPS", "ROA", "ROE",
-                "Doanh thu gần nhất", "Năm doanh thu",
-                "LNST gần nhất", "Năm LNST",
-            ]
-            table = table[[c for c in ordered if c in table.columns]]
-
+        result["factor_proxy"] = factor_proxy_analysis(
+            returns,
+            company_table=company_table,
+        )
     except Exception:
-        pass
+        result["factor_proxy"] = pd.DataFrame()
 
-    return table
+    if benchmark_returns is not None:
+        try:
+            factor_returns = pd.DataFrame({
+                "Market": pd.Series(benchmark_returns),
+            })
+            result["multifactor_regression"] = multifactor_regression(
+                portfolio_returns,
+                factor_returns,
+                rf=risk_free_rate,
+            )
+            result["active_analysis"] = active_analysis(
+                portfolio_returns,
+                benchmark_returns,
+                rf=risk_free_rate,
+            )
+        except Exception:
+            result["multifactor_regression"] = pd.DataFrame()
+            result["active_analysis"] = pd.DataFrame()
+    else:
+        result["multifactor_regression"] = pd.DataFrame()
+        result["active_analysis"] = pd.DataFrame()
+
+    try:
+        result["var_analysis"] = var_analysis(
+            portfolio_returns,
+            level=0.95,
+        )
+    except Exception:
+        result["var_analysis"] = pd.DataFrame()
+
+    try:
+        result["robustness"] = robustness_analysis(
+            portfolio_returns,
+            target_return=target_return,
+        )
+    except Exception:
+        result["robustness"] = pd.DataFrame()
+
+    try:
+        result["walk_forward"] = walk_forward_analysis(
+            portfolio_returns,
+            rf=risk_free_rate,
+        )
+    except Exception:
+        result["walk_forward"] = pd.DataFrame()
+
+    return result
 
 
-_core.build_company_table = build_company_table
-
-# Xuất toàn bộ API của engine gốc.
-for _name in dir(_core):
-    if not _name.startswith("__"):
-        globals()[_name] = getattr(_core, _name)
-
-# Giữ các hàm đã patch sau vòng export.
-globals()["get_company_info"] = get_company_info
-globals()["income_row_value"] = income_row_value
-globals()["build_company_table"] = build_company_table
+# Gắn API mới vào module để app.py có thể sử dụng.
+def run_advanced_portfolio_analysis(*args, **kwargs):
+    return build_advanced_portfolio_analysis(*args, **kwargs)
