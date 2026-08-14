@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 
 import portfolio_engine_core as _core
 from margin_patch import install_margin_patch
@@ -76,10 +77,13 @@ def income_row_value(income, keywords, exclude_keywords=None):
 
 _core.income_row_value = income_row_value
 
-# ------------------------------------------------------------
-# NÂNG CẤP ANALYTICS DÙNG DỮ LIỆU SẴN CÓ
-# ------------------------------------------------------------
+# Giữ nguyên toàn bộ API gốc của engine.
+_core_run_research = _core.run_research
 
+
+# ------------------------------------------------------------
+# PHÂN TÍCH NÂNG CAO DÙNG DỮ LIỆU SẴN CÓ
+# ------------------------------------------------------------
 def build_advanced_portfolio_analysis(
     returns,
     portfolio_returns,
@@ -90,7 +94,7 @@ def build_advanced_portfolio_analysis(
 ):
     """Chỉ dùng dữ liệu đã có trong lần chạy hiện tại.
 
-    Không gọi thêm API, không truy vấn nguồn dữ liệu bên ngoài.
+    Không gọi API và không truy vấn nguồn dữ liệu bên ngoài.
     """
     result = {}
 
@@ -99,8 +103,9 @@ def build_advanced_portfolio_analysis(
             returns,
             company_table=company_table,
         )
-    except Exception:
+    except Exception as exc:
         result["factor_proxy"] = pd.DataFrame()
+        result["factor_proxy_error"] = str(exc)
 
     if benchmark_returns is not None:
         try:
@@ -117,9 +122,10 @@ def build_advanced_portfolio_analysis(
                 benchmark_returns,
                 rf=risk_free_rate,
             )
-        except Exception:
+        except Exception as exc:
             result["multifactor_regression"] = pd.DataFrame()
             result["active_analysis"] = pd.DataFrame()
+            result["regression_error"] = str(exc)
     else:
         result["multifactor_regression"] = pd.DataFrame()
         result["active_analysis"] = pd.DataFrame()
@@ -129,28 +135,103 @@ def build_advanced_portfolio_analysis(
             portfolio_returns,
             level=0.95,
         )
-    except Exception:
+    except Exception as exc:
         result["var_analysis"] = pd.DataFrame()
+        result["var_error"] = str(exc)
 
     try:
         result["robustness"] = robustness_analysis(
             portfolio_returns,
             target_return=target_return,
         )
-    except Exception:
+    except Exception as exc:
         result["robustness"] = pd.DataFrame()
+        result["robustness_error"] = str(exc)
 
     try:
         result["walk_forward"] = walk_forward_analysis(
             portfolio_returns,
             rf=risk_free_rate,
         )
-    except Exception:
+    except Exception as exc:
         result["walk_forward"] = pd.DataFrame()
+        result["walk_forward_error"] = str(exc)
 
     return result
 
 
-# Gắn API mới vào module để app.py có thể sử dụng.
-def run_advanced_portfolio_analysis(*args, **kwargs):
-    return build_advanced_portfolio_analysis(*args, **kwargs)
+# ------------------------------------------------------------
+# WRAPPER RUN_RESEARCH
+# ------------------------------------------------------------
+def run_research(*args, **kwargs):
+    """Chạy engine gốc rồi bổ sung các kết quả dẫn xuất.
+
+    Tất cả dữ liệu đều lấy từ kết quả của _core.run_research.
+    Không thực hiện thêm bất kỳ truy vấn API nào.
+    """
+    results = _core_run_research(*args, **kwargs)
+
+    if not isinstance(results, dict):
+        return results
+
+    # Luôn trả chuỗi lợi suất danh mục để app và module nâng cao
+    # không phải tự tái tạo từ các cấu phần nội bộ.
+    returns = results.get("returns")
+    portfolio_results = results.get("portfolio_results", {})
+    portfolio_returns = {}
+
+    if isinstance(returns, pd.DataFrame) and not returns.empty:
+        for name, item in portfolio_results.items():
+            try:
+                if item is None or item[0] is None:
+                    continue
+                w = np.asarray(item[0], dtype=float)
+                if len(w) != returns.shape[1]:
+                    continue
+                portfolio_returns[name] = (
+                    returns.mul(w, axis=1).sum(axis=1).dropna()
+                )
+            except Exception:
+                continue
+
+    results["portfolio_returns"] = portfolio_returns
+
+    # Chạy lớp phân tích nâng cao trên danh mục Complete Portfolio nếu có.
+    # Nếu không có thì dùng danh mục đầu tiên có nghiệm hợp lệ.
+    selected_name = None
+    for candidate in ["Complete Portfolio", "Optimal Risky", "Minimum Variance"]:
+        if candidate in portfolio_returns:
+            selected_name = candidate
+            break
+    if selected_name is None and portfolio_returns:
+        selected_name = next(iter(portfolio_returns))
+
+    if selected_name is not None:
+        try:
+            rf = kwargs.get("risk_free_rate", 0.0)
+            target = kwargs.get("target_return", results.get("target_return", 0.15))
+            results["advanced_portfolio_analysis"] = build_advanced_portfolio_analysis(
+                returns=returns,
+                portfolio_returns=portfolio_returns[selected_name],
+                benchmark_returns=results.get("benchmark_returns"),
+                company_table=results.get("company_table"),
+                risk_free_rate=float(rf),
+                target_return=float(target),
+            )
+            results["advanced_portfolio_name"] = selected_name
+        except Exception as exc:
+            results["advanced_portfolio_analysis"] = {}
+            results["advanced_portfolio_analysis_error"] = str(exc)
+    else:
+        results["advanced_portfolio_analysis"] = {}
+        results["advanced_portfolio_analysis_error"] = "Không có danh mục hợp lệ."
+
+    return results
+
+
+# API cũ và API mới đều có sẵn.
+run_advanced_portfolio_analysis = build_advanced_portfolio_analysis
+
+# Các hàm đang được app sử dụng trực tiếp.
+configure_vnstock = _core.configure_vnstock
+clean_margin_table = _core.clean_margin_table
