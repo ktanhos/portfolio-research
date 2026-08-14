@@ -28,7 +28,7 @@ def display(*args, **kwargs):
 def clear_output(*args, **kwargs):
     return None
 
-PERIODS_PER_YEAR = 52
+PERIODS_PER_YEAR = 252
 RISK_FREE_RATE_RUNTIME = 0.04
 
 # ============================================================
@@ -593,7 +593,7 @@ def validate_benchmark_alignment(
 # ============================================================
 
 ANALYSIS_FREQUENCY = "W-FRI"
-PERIODS_PER_YEAR = 52
+PERIODS_PER_YEAR = 252
 
 def to_weekly_close(prices):
     """
@@ -2338,7 +2338,7 @@ def build_target_sensitivity(
 
 def portfolio_rolling_return(
     portfolio_returns,
-    window=52
+    window=252
 ):
     return (
         (1 + portfolio_returns)
@@ -2351,7 +2351,7 @@ def portfolio_rolling_return(
 def target_attainment_analysis(
     portfolio_returns,
     target_return,
-    window=52
+    window=252
 ):
     """
     Đo mức độ lịch sử đạt mục tiêu lợi nhuận:
@@ -3096,47 +3096,73 @@ def run_research(
     )
 
     # --------------------------------------------------------
-    # CHUYỂN SANG GIÁ ĐÓNG CỬA TUẦN
+    # TÍNH TOÁN BẰNG DỮ LIỆU NGÀY
     # --------------------------------------------------------
-    prices = to_weekly_close(daily_prices)
-    benchmark_prices = to_weekly_series(
+    # Toàn bộ thống kê, tối ưu danh mục, Sharpe, Beta, tương quan,
+    # drawdown, mục tiêu và kiểm định lịch sử đều dùng lợi suất ngày.
+    daily_prices = daily_prices.dropna(how="any")
+    daily_benchmark_prices = daily_benchmark_prices.dropna()
+
+    common_daily = daily_prices.index.intersection(
+        daily_benchmark_prices.index
+    ).sort_values()
+
+    daily_prices = daily_prices.loc[common_daily].dropna(how="any")
+    daily_benchmark_prices = daily_benchmark_prices.loc[
+        common_daily
+    ].dropna()
+
+    if len(common_daily) < 150:
+        raise ValueError(
+            "Không đủ dữ liệu ngày để phân tích. "
+            f"Chỉ có {len(common_daily)} phiên giao nhau."
+        )
+
+    effective_daily_start = common_daily[0]
+    effective_daily_end = common_daily[-1]
+
+    returns = calculate_returns(daily_prices)
+    benchmark_returns = (
+        daily_benchmark_prices.pct_change()
+        .dropna()
+    )
+
+    # --------------------------------------------------------
+    # DỮ LIỆU TUẦN CHỈ DÙNG CHO BIỂU ĐỒ
+    # --------------------------------------------------------
+    weekly_prices = to_weekly_close(daily_prices)
+    weekly_benchmark_prices = to_weekly_series(
         daily_benchmark_prices
     )
 
-    # Sau khi chuyển tuần, chỉ giữ những tuần có đủ toàn bộ
-    # cổ phiếu và benchmark.
-    common_weekly = prices.index.intersection(
-        benchmark_prices.index
+    common_weekly = weekly_prices.index.intersection(
+        weekly_benchmark_prices.index
     ).sort_values()
 
-    prices = prices.loc[common_weekly].dropna(how="any")
-    benchmark_prices = benchmark_prices.loc[
+    weekly_prices = weekly_prices.loc[common_weekly].dropna(how="any")
+    weekly_benchmark_prices = weekly_benchmark_prices.loc[
         common_weekly
     ].dropna()
-
-    if len(common_weekly) < 52:
-        raise ValueError(
-            "Không đủ dữ liệu tuần để phân tích. "
-            f"Chỉ có {len(common_weekly)} tuần giao nhau."
-        )
 
     effective_weekly_start = common_weekly[0]
     effective_weekly_end = common_weekly[-1]
 
-    print(
-        f"Dữ liệu phân tích: giá tuần, {len(common_weekly):,} tuần."
+    weekly_returns = calculate_returns(weekly_prices)
+    weekly_benchmark_returns = (
+        weekly_benchmark_prices.pct_change()
+        .dropna()
     )
 
-    returns = calculate_returns(prices)
-
-    benchmark_returns = (
-        benchmark_prices.pct_change()
-        .dropna()
+    print(
+        f"Dữ liệu tính toán: giá ngày, {len(common_daily):,} phiên."
+    )
+    print(
+        f"Dữ liệu biểu đồ: giá tuần, {len(common_weekly):,} tuần."
     )
 
     benchmark_summary = pd.DataFrame([{
         "Benchmark": benchmark,
-        "Số tuần": len(benchmark_prices),
+        "Số phiên": len(daily_benchmark_prices),
         "Lợi suất năm": benchmark_returns.mean() * PERIODS_PER_YEAR,
         "Biến động năm": benchmark_returns.std() * np.sqrt(PERIODS_PER_YEAR),
         "Sharpe": (
@@ -3505,7 +3531,7 @@ def run_research(
         if result[0] is None:
             continue
 
-        p_returns = returns @ result[0]
+        p_returns = weekly_returns @ result[0]
         wealth = 100 * (1 + p_returns).cumprod()
 
         plt.plot(
@@ -3515,8 +3541,8 @@ def run_research(
             linewidth=1.6
         )
 
-    aligned_bench = benchmark_returns.reindex(
-        returns.index
+    aligned_bench = weekly_benchmark_returns.reindex(
+        weekly_returns.index
     ).dropna()
 
     bench_wealth = (
@@ -3554,14 +3580,14 @@ def run_research(
         if result[0] is None:
             continue
 
-        p_returns = returns @ result[0]
+        p_returns = weekly_returns @ result[0]
 
         rolling_rows[name] = (
             1 + p_returns
         ).rolling(52).apply(np.prod, raw=True) - 1
 
-    aligned_bench = benchmark_returns.reindex(
-        returns.index
+    aligned_bench = weekly_benchmark_returns.reindex(
+        weekly_returns.index
     ).dropna()
 
     rolling_rows[benchmark] = (
@@ -3653,7 +3679,7 @@ def run_research(
 
         dd = portfolio_drawdown(
             result[0],
-            returns
+            weekly_returns
         )
 
         plt.plot(
@@ -3663,8 +3689,8 @@ def run_research(
             linewidth=1.4
         )
 
-    aligned_bench = benchmark_returns.reindex(
-        returns.index
+    aligned_bench = weekly_benchmark_returns.reindex(
+        weekly_returns.index
     ).dropna()
 
     bench_wealth = (
@@ -4274,7 +4300,7 @@ def run_research(
             effective_weekly_start,
             effective_weekly_end
         ),
-        "analysis_frequency": "Tuần, giá đóng cửa cuối tuần",
+        "analysis_frequency": "Ngày, giá đóng cửa",
         "asset_summary": asset_summary,
         "correlation": returns.corr(),
         "portfolio_results": portfolio_results,
