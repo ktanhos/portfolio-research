@@ -202,6 +202,12 @@ if run_analysis:
                 plt.show = original_show
             status.update(label="Phân tích hoàn tất", state="complete")
 
+        # Lưu toàn bộ kết quả vào session để các lần rerun do selectbox ở mục 11
+        # vẫn còn đầy đủ dữ liệu, không cần chạy lại API hay chạy lại nghiên cứu.
+        st.session_state["research_results"] = results
+        st.session_state["research_figures"] = figures
+        st.session_state["research_log_text"] = log_buffer.getvalue().strip()
+
         st.success("Đã hoàn tất phân tích.")
 
         company_table = results.get("company_table", pd.DataFrame())
@@ -280,10 +286,6 @@ if run_analysis:
         st.subheader("11. PHÂN TÍCH NÂNG CAO")
         advanced_results = results.get("advanced_portfolio_analysis")
         if isinstance(advanced_results, dict) and advanced_results:
-            # Truyền toàn bộ nguồn dữ liệu gốc vào mục 11. Không chỉ truyền
-            # kết quả của danh mục đang được chọn tại thời điểm chạy phân tích.
-            # Nhờ đó bộ chọn trong mục 11 có thể lấy đúng chuỗi lợi suất của
-            # từng danh mục và tính lại toàn bộ các bảng phân tích.
             advanced_results = dict(advanced_results)
             advanced_results["_all_portfolios"] = results.get("advanced_portfolio_analysis_by_portfolio", advanced_results.get("_all_portfolios", {}))
             advanced_results["_advanced_source_returns"] = results.get("_advanced_source_returns", results.get("returns"))
@@ -305,3 +307,21 @@ if run_analysis:
 
     except Exception as e:
         st.error(f"{type(e).__name__}: {str(e)}")
+
+# Khi người dùng chọn danh mục và nhấn Enter, Streamlit rerun toàn bộ script.
+# Không được để mục 11 nằm bên trong nhánh run_analysis, vì khi đó lần rerun
+# này run_analysis = False và mục 11 sẽ biến mất hoặc giữ dữ liệu cũ.
+# Kết quả nghiên cứu đã lưu trong session nên chỉ render lại mục 11.
+if not run_analysis and "research_results" in st.session_state:
+    stored_results = st.session_state["research_results"]
+    advanced_results = stored_results.get("advanced_portfolio_analysis")
+    if isinstance(advanced_results, dict) and advanced_results:
+        advanced_results = dict(advanced_results)
+        advanced_results["_all_portfolios"] = stored_results.get("advanced_portfolio_analysis_by_portfolio", advanced_results.get("_all_portfolios", {}))
+        advanced_results["_advanced_source_returns"] = stored_results.get("_advanced_source_returns", stored_results.get("returns"))
+        advanced_results["_advanced_source_benchmark_returns"] = stored_results.get("_advanced_source_benchmark_returns", stored_results.get("benchmark_returns"))
+        advanced_results["_advanced_source_company_table"] = stored_results.get("_advanced_source_company_table", stored_results.get("company_table"))
+        advanced_results["risk_free_rate"] = stored_results.get("risk_free_rate", risk_free_rate)
+        advanced_results["target_return"] = stored_results.get("target_return", target_return)
+        st.subheader("11. PHÂN TÍCH NÂNG CAO")
+        render_advanced_section(advanced_results, target_return=float(target_return))
