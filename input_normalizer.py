@@ -15,7 +15,6 @@ Lớp này không sửa dữ liệu giá, lợi suất hoặc Markowitz.
 import numpy as np
 import pandas as pd
 
-
 FINANCIAL_MONEY_COLUMNS = {
     "Doanh thu gần nhất",
     "LNST gần nhất",
@@ -42,22 +41,10 @@ RATIO_COLUMNS = {
     "Tương quan VNINDEX",
 }
 
-PERCENT_COLUMNS = {
-    "ROA",
-    "ROE",
-    "roa",
-    "roe",
-}
+PERCENT_COLUMNS = {"ROA", "ROE", "roa", "roe"}
 
 TEXT_VALUES = {
-    "",
-    "không",
-    "khong",
-    "n/a",
-    "na",
-    "none",
-    "null",
-    "nan",
+    "", "không", "khong", "n/a", "na", "none", "null", "nan"
 }
 
 
@@ -85,21 +72,19 @@ def normalize_financial_money(value):
     """
     Chuẩn hóa tiền BCTC về VND.
 
-    Vnstock Community ở nguồn hiện tại trả các chỉ tiêu BCTC
-    theo đơn vị tỷ đồng cho phần dữ liệu mà engine đang đọc.
-    Vì vậy 5.96 phải được hiểu là 5.96 nghìn tỷ, tức 5.96e12 VND.
+    Engine hiện nhận các giá trị BCTC theo đơn vị nghìn VND.
+    Vì vậy 5.960.000.000 trong nguồn tương ứng 5.960.000.000.000 VND.
 
-    Hàm này được thiết kế bảo thủ:
-    nếu giá trị đã có quy mô VND thì không nhân thêm.
+    Nếu dữ liệu đã ở VND với quy mô từ 1 nghìn tỷ trở lên thì giữ nguyên.
     """
     x = safe_numeric(value)
     if pd.isna(x):
         return np.nan
 
-    # Giá trị BCTC đang được engine nhận thường ở đơn vị tỷ VND.
-    # Mốc 1e10 giúp tránh nhân lại các giá trị vốn đã ở VND.
-    if abs(x) < 1e10:
-        return x * 1e9
+    # Nguồn hiện tại đang trả BCTC ở nghìn VND.
+    # 5,96 tỷ trong bảng cũ thực chất là 5,96 nghìn tỷ.
+    if abs(x) < 1e12:
+        return x * 1000.0
 
     return x
 
@@ -108,11 +93,6 @@ def normalize_market_cap(value):
     x = safe_numeric(value)
     if pd.isna(x):
         return np.nan
-
-    # Vốn hóa của engine hiện đã ở VND. Chỉ quy đổi nếu nguồn
-    # trả về đơn vị tỷ hoặc triệu với quy mô rõ ràng.
-    if abs(x) < 1e8:
-        return x * 1e9
     return x
 
 
@@ -120,15 +100,13 @@ def normalize_percent(value):
     x = safe_numeric(value)
     if pd.isna(x):
         return np.nan
-
-    # Nguồn có thể trả 0.15 hoặc 15 cho 15%.
     if abs(x) > 1:
         return x / 100.0
     return x
 
 
 def normalize_company_dataframe(df):
-    """Chuẩn hóa DataFrame tổng quan doanh nghiệp."""
+    """Chuẩn hóa DataFrame tổng quan doanh nghiệp trước khi phân tích."""
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return df
 
@@ -162,11 +140,7 @@ def normalize_result_tables(result):
     if not isinstance(result, dict):
         return result
 
-    for key in [
-        "company_info",
-        "company_summary",
-        "asset_summary",
-    ]:
+    for key in ["company_info", "company_summary", "company_table", "asset_summary"]:
         value = result.get(key)
         if isinstance(value, pd.DataFrame):
             result[key] = normalize_company_dataframe(value)
