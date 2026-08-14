@@ -133,11 +133,14 @@ def run_research(*args, **kwargs):
     results = _core_run_research(*args, **kwargs)
     if not isinstance(results, dict):
         return results
+
     returns = results.get("returns")
     portfolio_returns = _build_portfolio_returns(results)
     results["portfolio_returns"] = portfolio_returns
+
     rf = kwargs.get("risk_free_rate", 0.0)
     target = kwargs.get("target_return", results.get("target_return", 0.15))
+
     all_advanced = _run_all_advanced(
         returns=returns,
         portfolio_returns=portfolio_returns,
@@ -147,19 +150,35 @@ def run_research(*args, **kwargs):
         target_return=float(target),
     )
     results["advanced_portfolio_analysis_by_portfolio"] = all_advanced
-    selected_name = None
-    for candidate in ["Complete Portfolio", "Optimal Risky", "Minimum Variance"]:
-        if candidate in all_advanced and not all_advanced[candidate].get("error"):
-            selected_name = candidate
-            break
-    if selected_name is None and all_advanced:
+
+    # CFA khong dinh nghia mot danh muc mac dinh la danh muc tot nhat.
+    # Complete Portfolio la danh muc mac dinh duoc danh gia vi no phan anh
+    # su ket hop giua danh muc rui ro va khau vi rui ro cua nha dau tu.
+    requested_name = kwargs.get("advanced_portfolio_name")
+    if requested_name in all_advanced and not all_advanced[requested_name].get("error"):
+        selected_name = requested_name
+    elif "Complete Portfolio" in all_advanced and not all_advanced["Complete Portfolio"].get("error"):
+        selected_name = "Complete Portfolio"
+    elif "Optimal Risky" in all_advanced and not all_advanced["Optimal Risky"].get("error"):
+        selected_name = "Optimal Risky"
+    elif "Minimum Variance" in all_advanced and not all_advanced["Minimum Variance"].get("error"):
+        selected_name = "Minimum Variance"
+    elif all_advanced:
         selected_name = next(iter(all_advanced))
+    else:
+        selected_name = None
+
     if selected_name is not None:
-        results["advanced_portfolio_analysis"] = all_advanced[selected_name]
+        selected_analysis = dict(all_advanced[selected_name])
+        selected_analysis["_portfolio_name"] = selected_name
+        selected_analysis["_target_return"] = float(target)
+        selected_analysis["_risk_profile"] = kwargs.get("risk_profile")
+        results["advanced_portfolio_analysis"] = selected_analysis
         results["advanced_portfolio_name"] = selected_name
     else:
         results["advanced_portfolio_analysis"] = {}
-        results["advanced_portfolio_analysis_error"] = "Không có danh mục hợp lệ."
+        results["advanced_portfolio_analysis_error"] = "Khong co danh muc hop le de danh gia."
+
     _LAST_RESULTS = results
     return results
 
