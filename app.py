@@ -280,7 +280,18 @@ if run_analysis:
         st.subheader("11. PHÂN TÍCH NÂNG CAO")
         advanced_results = results.get("advanced_portfolio_analysis")
         if isinstance(advanced_results, dict) and advanced_results:
-            render_advanced_section(advanced_results)
+            # Truyền toàn bộ nguồn dữ liệu gốc vào mục 11. Không chỉ truyền
+            # kết quả của danh mục đang được chọn tại thời điểm chạy phân tích.
+            # Nhờ đó bộ chọn trong mục 11 có thể lấy đúng chuỗi lợi suất của
+            # từng danh mục và tính lại toàn bộ các bảng phân tích.
+            advanced_results = dict(advanced_results)
+            advanced_results["_all_portfolios"] = results.get("advanced_portfolio_analysis_by_portfolio", advanced_results.get("_all_portfolios", {}))
+            advanced_results["_advanced_source_returns"] = results.get("_advanced_source_returns", results.get("returns"))
+            advanced_results["_advanced_source_benchmark_returns"] = results.get("_advanced_source_benchmark_returns", results.get("benchmark_returns"))
+            advanced_results["_advanced_source_company_table"] = results.get("_advanced_source_company_table", results.get("company_table"))
+            advanced_results["risk_free_rate"] = results.get("risk_free_rate", risk_free_rate)
+            advanced_results["target_return"] = results.get("target_return", target_return)
+            render_advanced_section(advanced_results, target_return=float(target_return))
         else:
             error = results.get("advanced_portfolio_analysis_error")
             if error:
