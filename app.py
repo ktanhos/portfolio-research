@@ -360,7 +360,7 @@ def annotate_scatter_figure(fig, labels):
 
 
 def build_rolling_target_figure(results, target_return):
-    """Tạo biểu đồ lợi suất cuộn 12 tháng so với mục tiêu."""
+    """Tạo biểu đồ Rolling Return 12 tháng so với mục tiêu."""
     returns = results.get("returns")
     weights = results.get("weights")
 
@@ -408,9 +408,9 @@ def build_rolling_target_figure(results, target_return):
         label=f"Mục tiêu {target_return:.1%}",
     )
 
-    ax.set_title("Lợi suất cuộn 12 tháng so với mục tiêu")
+    ax.set_title("Rolling Return 12 tháng so với mục tiêu")
     ax.set_xlabel("Thời gian")
-    ax.set_ylabel("Lợi suất cuộn 12 tháng (%)")
+    ax.set_ylabel("Rolling Return 12 tháng (%)")
     ax.legend(ncol=2, loc="best")
     ax.grid(alpha=0.25)
     fig.tight_layout()
@@ -700,6 +700,48 @@ if run_analysis:
         st.subheader("6.3. MỤC TIÊU LỢI NHUẬN")
         target_summary = results.get("target_summary")
         if isinstance(target_summary, pd.DataFrame) and not target_summary.empty:
+            target_summary = target_summary.copy()
+
+            if "Mục tiêu" in target_summary.columns:
+                target_summary = target_summary.rename(
+                    columns={"Mục tiêu": "Lợi suất mục tiêu"}
+                )
+
+            if (
+                "Lợi suất kỳ vọng" in target_summary.columns
+                and "Lợi suất mục tiêu" in target_summary.columns
+            ):
+                target_summary["Chênh lệch"] = (
+                    pd.to_numeric(
+                        target_summary["Lợi suất kỳ vọng"],
+                        errors="coerce",
+                    )
+                    - pd.to_numeric(
+                        target_summary["Lợi suất mục tiêu"],
+                        errors="coerce",
+                    )
+                )
+
+            preferred = [
+                "Lợi suất mục tiêu",
+                "Lợi suất kỳ vọng",
+                "Chênh lệch",
+                "Rủi ro thấp nhất",
+                "Sharpe",
+                "Trạng thái",
+            ]
+            ordered = [
+                column
+                for column in preferred
+                if column in target_summary.columns
+            ]
+            remaining = [
+                column
+                for column in target_summary.columns
+                if column not in ordered
+            ]
+            target_summary = target_summary[ordered + remaining]
+
             render_df(target_summary, hide_index=True)
 
         target_check = results.get("target_check", pd.DataFrame())
@@ -759,7 +801,7 @@ if run_analysis:
             else []
         )
 
-        # Thay biểu đồ scatter mục tiêu hiện tại bằng rolling return 12 tháng.
+        # Thay biểu đồ scatter mục tiêu hiện tại bằng Rolling Return 12 tháng.
         rolling_target_fig = build_rolling_target_figure(
             results,
             float(target_return),
