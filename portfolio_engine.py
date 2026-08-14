@@ -18,7 +18,17 @@ _original_get_company_info = _core.get_company_info
 
 def get_company_info(tickers, prices=None):
     df = _original_get_company_info(tickers, prices=prices)
-    return normalize_company_dataframe(df)
+    df = normalize_company_dataframe(df)
+
+    # Một số phiên bản nguồn trả P/E theo đơn vị phần nghìn.
+    # Ví dụ 33766 thực chất là 33,766 lần.
+    if isinstance(df, pd.DataFrame) and "P/E" in df.columns:
+        pe = pd.to_numeric(df["P/E"], errors="coerce")
+        mask = pe.abs() > 1000
+        df.loc[mask, "P/E"] = pe.loc[mask] / 1000.0
+
+    return df
+
 
 _core.get_company_info = get_company_info
 
@@ -61,15 +71,65 @@ def income_row_value(income, keywords, exclude_keywords=None):
         exclude_keywords=exclude_keywords,
     )
 
-    if pd.notna(value):
-        # Với dữ liệu V21 cũ không có metadata, nguồn hiện tại đang
-        # thấp hơn đơn vị nội bộ VND một hệ số 1.000.
-        if not has_unit_metadata:
-            value = float(value) * 1000.0
+    if pd.notna(value) and not has_unit_metadata:
+        value = float(value) * 1000.0
 
     return value, year, item
 
+
 _core.income_row_value = income_row_value
+
+# ------------------------------------------------------------
+# BẢNG DOANH NGHIỆP: GIỮ RÕ NĂM CỦA BCTC
+# ------------------------------------------------------------
+_original_build_company_table = _core.build_company_table
+
+
+def build_company_table(tickers, prices, include_company, include_income):
+    table = _original_build_company_table(
+        tickers,
+        prices,
+        include_company,
+        include_income,
+    )
+
+    if not include_income or not isinstance(table, pd.DataFrame) or table.empty:
+        return table
+
+    try:
+        income = _core.get_income_summary(tickers)
+        year_cols = [c for c in ["Mã", "Năm doanh thu", "Năm LNST"] if c in income.columns]
+
+        if len(year_cols) == 3:
+            years = income[year_cols].copy()
+            table = table.merge(years, on="Mã", how="left")
+
+            table["Doanh thu gần nhất"] = pd.to_numeric(
+                table["Doanh thu gần nhất"], errors="coerce"
+            )
+            table["LNST gần nhất"] = pd.to_numeric(
+                table["LNST gần nhất"], errors="coerce"
+            )
+
+            table["Doanh thu gần nhất"] = table.apply(
+                lambda r: r["Doanh thu gần nhất"], axis=1
+            )
+
+            ordered = [
+                "Mã", "Ngành", "Số CP lưu hành", "Vốn hóa",
+                "P/E", "P/B", "EPS", "ROA", "ROE",
+                "Doanh thu gần nhất", "Năm doanh thu",
+                "LNST gần nhất", "Năm LNST",
+            ]
+            table = table[[c for c in ordered if c in table.columns]]
+
+    except Exception:
+        pass
+
+    return table
+
+
+_core.build_company_table = build_company_table
 
 # Xuất toàn bộ API của engine gốc.
 for _name in dir(_core):
@@ -79,3 +139,4 @@ for _name in dir(_core):
 # Giữ các hàm đã patch sau vòng export.
 globals()["get_company_info"] = get_company_info
 globals()["income_row_value"] = income_row_value
+globals()["build_company_table"] = build_company_table
