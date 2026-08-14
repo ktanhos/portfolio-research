@@ -4,5 +4,5 @@ numpy
 scipy
 matplotlib
 plotly
-vnstock
+vnstock>=4.0.3
 openpyxl
