@@ -32,49 +32,34 @@ def _fmt_money_trillion(x):
 
 
 def _format_advanced_table(df, section_key=None):
-    """Chuẩn hóa toàn bộ đơn vị hiển thị của mục 11.
-
-    Engine giữ nguyên đơn vị nội bộ để tính toán. Hàm này chỉ định dạng
-    lớp giao diện, tránh làm thay đổi dữ liệu gốc.
-    """
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return df
-
     out = df.copy()
 
     if section_key == "factor_proxy":
-        rename = {
+        out = out.rename(columns={
             "Momentum 12T": "Momentum 12 tháng",
             "Volatility": "Biến động năm",
             "Size proxy vốn hóa": "Quy mô vốn hóa",
             "Value proxy P/B": "Định giá P/B",
             "Quality proxy ROE": "Chất lượng ROE",
-        }
-        out = out.rename(columns=rename)
-        if "Momentum 12 tháng" in out.columns:
-            out["Momentum 12 tháng"] = out["Momentum 12 tháng"].map(_fmt_pct)
-        if "Biến động năm" in out.columns:
-            out["Biến động năm"] = out["Biến động năm"].map(_fmt_pct)
+        })
+        for col in ["Momentum 12 tháng", "Biến động năm", "Chất lượng ROE"]:
+            if col in out.columns:
+                out[col] = out[col].map(_fmt_pct)
         if "Quy mô vốn hóa" in out.columns:
             out["Quy mô vốn hóa"] = out["Quy mô vốn hóa"].map(_fmt_money_trillion)
         if "Định giá P/B" in out.columns:
             out["Định giá P/B"] = out["Định giá P/B"].map(lambda x: _fmt_num(x, 2))
-        if "Chất lượng ROE" in out.columns:
-            out["Chất lượng ROE"] = out["Chất lượng ROE"].map(_fmt_pct)
         return out
 
     if section_key == "multifactor_regression":
         if "Hệ số" in out.columns:
-            out["Hệ số"] = out["Hệ số"].map(lambda x: _fmt_num(x, 4))
-        if "Hệ số" in out.columns:
-            for idx in ["R²", "Specific Risk", "Alpha năm"]:
-                if idx in out.index:
-                    value = pd.to_numeric(out.loc[idx, "Hệ số"], errors="coerce")
-                    if pd.notna(value):
-                        if idx in {"R²", "Specific Risk", "Alpha năm"}:
-                            out.loc[idx, "Hệ số"] = _fmt_pct(value) if idx != "R²" else _fmt_pct(value)
-        out = out.rename(index={"Specific Risk": "Rủi ro riêng", "Alpha năm": "Alpha năm", "R²": "R²"})
-        return out
+            for idx in out.index:
+                value = pd.to_numeric(out.loc[idx, "Hệ số"], errors="coerce")
+                if pd.notna(value):
+                    out.loc[idx, "Hệ số"] = _fmt_pct(value) if idx in {"R²", "Specific Risk", "Alpha năm"} else _fmt_num(value, 4)
+        return out.rename(index={"Specific Risk": "Rủi ro riêng"})
 
     if section_key == "active_analysis":
         for col in ["Active Return", "Tracking Error"]:
@@ -107,12 +92,6 @@ def _format_advanced_table(df, section_key=None):
     return out
 
 
-def _render_advanced_table(df, section_key=None):
-    formatted = _format_advanced_table(df, section_key=section_key)
-    if formatted is not None and not formatted.empty:
-        st.dataframe(formatted, use_container_width=True, hide_index=section_key == "factor_proxy")
-
-
 def build_portfolio_evaluation(advanced_results, target_return=0.15):
     robustness = advanced_results.get("robustness", pd.DataFrame())
     active = advanced_results.get("active_analysis", pd.DataFrame())
@@ -133,7 +112,6 @@ def build_portfolio_evaluation(advanced_results, target_return=0.15):
         row = var.iloc[0]
         metrics["Historical VaR"] = row.get("Historical VaR", np.nan)
         metrics["CVaR"] = row.get("CVaR", np.nan)
-
     if isinstance(walk, pd.DataFrame) and not walk.empty and "Test Sharpe" in walk.columns:
         values = pd.to_numeric(walk["Test Sharpe"], errors="coerce").dropna()
         if not values.empty:
@@ -146,41 +124,17 @@ def build_portfolio_evaluation(advanced_results, target_return=0.15):
     ir = metrics.get("Information Ratio", np.nan)
     oos_sharpe = metrics.get("OOS Sharpe trung vị", np.nan)
 
-    if pd.notna(cagr):
-        target_status = "Đạt" if cagr >= target_return else "Không đạt"
-        target_comment = f"CAGR {_fmt_pct(cagr)} so với mục tiêu {_fmt_pct(target_return)}"
-    else:
-        target_status = "Không đủ dữ liệu"
-        target_comment = "Không xác định được CAGR"
-
-    if pd.notna(sharpe):
-        risk_status = "Tốt" if sharpe >= 1.0 else "Khá" if sharpe >= 0.5 else "Yếu" if sharpe >= 0 else "Không đạt"
-        risk_comment = f"Sharpe {_fmt_num(sharpe)}"
-    else:
-        risk_status = "Không đủ dữ liệu"
-        risk_comment = "Không xác định được Sharpe"
-
-    if pd.notna(max_dd):
-        dd_abs = abs(max_dd)
-        dd_status = "Tốt" if dd_abs <= 0.15 else "Chấp nhận được" if dd_abs <= 0.25 else "Cần lưu ý" if dd_abs <= 0.35 else "Rủi ro cao"
-        dd_comment = f"Maximum Drawdown {_fmt_pct(max_dd)}"
-    else:
-        dd_status = "Không đủ dữ liệu"
-        dd_comment = "Không xác định được Maximum Drawdown"
-
-    if pd.notna(ir):
-        active_status = "Tích cực" if ir >= 0.5 else "Trung tính" if ir >= 0 else "Kém"
-        active_comment = f"Information Ratio {_fmt_num(ir)}"
-    else:
-        active_status = "Không đủ dữ liệu"
-        active_comment = "Không xác định được Information Ratio"
-
-    if pd.notna(oos_sharpe):
-        stability_status = "Ổn định" if oos_sharpe >= 0.5 else "Trung bình" if oos_sharpe >= 0 else "Không ổn định"
-        stability_comment = f"Sharpe ngoài mẫu trung vị {_fmt_num(oos_sharpe)}"
-    else:
-        stability_status = "Không đủ dữ liệu"
-        stability_comment = "Chưa đủ mẫu để đánh giá ngoài mẫu"
+    target_status = "Đạt" if pd.notna(cagr) and cagr >= target_return else "Không đạt" if pd.notna(cagr) else "Không đủ dữ liệu"
+    target_comment = f"CAGR {_fmt_pct(cagr)} so với mục tiêu {_fmt_pct(target_return)}" if pd.notna(cagr) else "Không xác định được CAGR"
+    risk_status = "Tốt" if pd.notna(sharpe) and sharpe >= 1.0 else "Khá" if pd.notna(sharpe) and sharpe >= 0.5 else "Yếu" if pd.notna(sharpe) and sharpe >= 0 else "Không đạt" if pd.notna(sharpe) else "Không đủ dữ liệu"
+    risk_comment = f"Sharpe {_fmt_num(sharpe)}" if pd.notna(sharpe) else "Không xác định được Sharpe"
+    dd_abs = abs(max_dd) if pd.notna(max_dd) else np.nan
+    dd_status = "Tốt" if pd.notna(dd_abs) and dd_abs <= 0.15 else "Chấp nhận được" if pd.notna(dd_abs) and dd_abs <= 0.25 else "Cần lưu ý" if pd.notna(dd_abs) and dd_abs <= 0.35 else "Rủi ro cao" if pd.notna(dd_abs) else "Không đủ dữ liệu"
+    dd_comment = f"Maximum Drawdown {_fmt_pct(max_dd)}" if pd.notna(max_dd) else "Không xác định được Maximum Drawdown"
+    active_status = "Tích cực" if pd.notna(ir) and ir >= 0.5 else "Trung tính" if pd.notna(ir) and ir >= 0 else "Kém" if pd.notna(ir) else "Không đủ dữ liệu"
+    active_comment = f"Information Ratio {_fmt_num(ir)}" if pd.notna(ir) else "Không xác định được Information Ratio"
+    stability_status = "Ổn định" if pd.notna(oos_sharpe) and oos_sharpe >= 0.5 else "Trung bình" if pd.notna(oos_sharpe) and oos_sharpe >= 0 else "Không ổn định" if pd.notna(oos_sharpe) else "Không đủ dữ liệu"
+    stability_comment = f"Sharpe ngoài mẫu trung vị {_fmt_num(oos_sharpe)}" if pd.notna(oos_sharpe) else "Chưa đủ mẫu để đánh giá ngoài mẫu"
 
     statuses = [target_status, risk_status, dd_status, active_status, stability_status]
     positive = sum(x in {"Đạt", "Tốt", "Khá", "Chấp nhận được", "Tích cực", "Ổn định"} for x in statuses)
@@ -217,13 +171,7 @@ def build_portfolio_evaluation(advanced_results, target_return=0.15):
         {"Tiêu chí": "So với VNINDEX", "Kết quả": active_status, "Đánh giá": active_comment},
         {"Tiêu chí": "Độ ổn định ngoài mẫu", "Kết quả": stability_status, "Đánh giá": stability_comment},
     ])
-
-    return {
-        "summary": summary,
-        "overall": overall,
-        "conclusion": ". ".join(parts) + ".",
-        "warnings": warnings,
-    }
+    return {"summary": summary, "overall": overall, "conclusion": ". ".join(parts) + ".", "warnings": warnings}
 
 
 def _recalculate_selected_analysis(selected_results, advanced_results, target_return):
@@ -262,13 +210,11 @@ def _recalculate_selected_analysis(selected_results, advanced_results, target_re
     except Exception as exc:
         fresh["var_analysis"] = pd.DataFrame()
         fresh["var_error"] = str(exc)
-
     try:
         fresh["robustness"] = robustness_analysis(p_returns, target_return=float(target_return))
     except Exception as exc:
         fresh["robustness"] = pd.DataFrame()
         fresh["robustness_error"] = str(exc)
-
     try:
         fresh["walk_forward"] = walk_forward_analysis(p_returns, rf=rf)
     except Exception as exc:
@@ -302,7 +248,7 @@ def _render_one_portfolio(name, raw_results, source_results, target_return):
         st.markdown(f"**{heading}**")
         table = selected.get(key, pd.DataFrame())
         if isinstance(table, pd.DataFrame) and not table.empty:
-            _render_advanced_table(table, section_key=key)
+            st.dataframe(_format_advanced_table(table, key), use_container_width=True, hide_index=key == "factor_proxy")
         else:
             error = selected.get(f"{key}_error")
             if error:
@@ -331,13 +277,26 @@ def render_advanced_section(advanced_results, title=None, target_return=0.15):
     if not isinstance(all_portfolios, dict) or not all_portfolios:
         all_portfolios = {advanced_results.get("_portfolio_name", "Complete Portfolio"): advanced_results}
 
-    portfolio_names = [name for name, value in all_portfolios.items() if isinstance(value, dict) and not value.get("error")]
+    # Target Return là mục tiêu lợi suất dùng để đánh giá, không phải một danh mục.
+    # Không đưa nó vào so sánh hay các tab phân tích danh mục.
+    excluded_portfolios = {
+        "target return",
+        "target return portfolio",
+        "target",
+    }
+    portfolio_names = [
+        name for name, value in all_portfolios.items()
+        if isinstance(value, dict)
+        and not value.get("error")
+        and str(name).strip().lower() not in excluded_portfolios
+    ]
+
     if not portfolio_names:
         st.warning("Không có danh mục hợp lệ để đánh giá.")
         return
 
     st.markdown("**Danh mục được đánh giá**")
-    st.caption("Mục 11 hiển thị đồng thời toàn bộ danh mục. Không cần chọn danh mục hoặc nhấn Enter; mỗi danh mục được tính độc lập từ cùng một bộ dữ liệu nguồn.")
+    st.caption("Mục 11 chỉ phân tích các danh mục thực sự được tạo ra. Mục tiêu lợi suất chỉ được dùng làm ngưỡng đánh giá, không được coi là một danh mục.")
 
     evaluations = []
     calculated = {}
