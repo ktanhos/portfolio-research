@@ -27,16 +27,59 @@ def _fmt_num(x, decimals=2):
 def _fmt_money_trillion(x):
     if pd.isna(x):
         return "N/A"
-    value = float(x) / 1e12
-    return f"{value:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".") + " nghìn tỷ đồng"
+    return f"{float(x) / 1e12:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".") + " nghìn tỷ đồng"
+
+
+def _estimate_portfolio_weights(source_returns, portfolio_returns):
+    if not isinstance(source_returns, pd.DataFrame) or source_returns.empty:
+        return pd.Series(dtype=float)
+    if not isinstance(portfolio_returns, pd.Series) or portfolio_returns.empty:
+        return pd.Series(dtype=float)
+    data = pd.concat([source_returns, portfolio_returns.rename("_portfolio")], axis=1).dropna()
+    if len(data) < max(30, source_returns.shape[1] * 5):
+        return pd.Series(dtype=float)
+    try:
+        x = data[source_returns.columns].to_numpy(dtype=float)
+        y = data["_portfolio"].to_numpy(dtype=float)
+        w = np.linalg.lstsq(x, y, rcond=None)[0]
+        weights = pd.Series(w, index=source_returns.columns, dtype=float)
+        weights[weights.abs() < 1e-8] = 0.0
+        return weights
+    except Exception:
+        return pd.Series(dtype=float)
+
+
+def _portfolio_factor_tables(source_returns, portfolio_returns, company_table):
+    asset = factor_proxy_analysis(source_returns, company_table=company_table)
+    if not isinstance(asset, pd.DataFrame) or asset.empty:
+        return asset, pd.DataFrame()
+
+    weights = _estimate_portfolio_weights(source_returns, portfolio_returns)
+    asset = asset.copy()
+    if not weights.empty:
+        asset["Tỷ trọng danh mục"] = asset["Mã"].map(weights).fillna(0.0)
+        total_abs = asset["Tỷ trọng danh mục"].abs().sum()
+        if total_abs > 0:
+            asset["Tỷ trọng danh mục"] = asset["Tỷ trọng danh mục"] / total_abs
+        cols = ["Momentum 12T", "Volatility", "Size proxy vốn hóa", "Value proxy P/B", "Quality proxy ROE"]
+        summary = {}
+        for col in cols:
+            if col not in asset.columns:
+                summary[col] = np.nan
+                continue
+            values = pd.to_numeric(asset[col], errors="coerce")
+            valid = values.notna() & asset["Tỷ trọng danh mục"].notna()
+            summary[col] = float((values[valid] * asset.loc[valid, "Tỷ trọng danh mục"]).sum()) if valid.any() else np.nan
+        return asset, pd.DataFrame([summary])
+
+    return asset, pd.DataFrame()
 
 
 def _format_advanced_table(df, section_key=None):
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return df
     out = df.copy()
-
-    if section_key == "factor_proxy":
+    if section_key in {"factor_proxy", "factor_summary"}:
         out = out.rename(columns={
             "Momentum 12T": "Momentum 12 tháng",
             "Volatility": "Biến động năm",
@@ -44,7 +87,7 @@ def _format_advanced_table(df, section_key=None):
             "Value proxy P/B": "Định giá P/B",
             "Quality proxy ROE": "Chất lượng ROE",
         })
-        for col in ["Momentum 12 tháng", "Biến động năm", "Chất lượng ROE"]:
+        for col in ["Momentum 12 tháng", "Biến động năm", "Chất lượng ROE", "Tỷ trọng danh mục"]:
             if col in out.columns:
                 out[col] = out[col].map(_fmt_pct)
         if "Quy mô vốn hóa" in out.columns:
@@ -52,7 +95,6 @@ def _format_advanced_table(df, section_key=None):
         if "Định giá P/B" in out.columns:
             out["Định giá P/B"] = out["Định giá P/B"].map(lambda x: _fmt_num(x, 2))
         return out
-
     if section_key == "multifactor_regression":
         if "Hệ số" in out.columns:
             for idx in out.index:
@@ -60,19 +102,16 @@ def _format_advanced_table(df, section_key=None):
                 if pd.notna(value):
                     out.loc[idx, "Hệ số"] = _fmt_pct(value) if idx in {"R²", "Specific Risk", "Alpha năm"} else _fmt_num(value, 4)
         return out.rename(index={"Specific Risk": "Rủi ro riêng"})
-
     if section_key == "active_analysis":
         for col in ["Active Return", "Tracking Error"]:
             if col in out.columns:
                 out[col] = out[col].map(_fmt_pct)
         return out
-
     if section_key == "var_analysis":
         for col in ["Historical VaR", "Parametric VaR", "Monte Carlo VaR", "CVaR"]:
             if col in out.columns:
                 out[col] = out[col].map(_fmt_pct)
         return out
-
     if section_key == "robustness":
         for col in ["CAGR", "Rủi ro", "Max Drawdown"]:
             if col in out.columns:
@@ -80,7 +119,6 @@ def _format_advanced_table(df, section_key=None):
         if "Cửa sổ" in out.columns:
             out["Cửa sổ"] = out["Cửa sổ"].map(lambda x: _fmt_num(x, 0))
         return out
-
     if section_key == "walk_forward":
         for col in ["Train CAGR", "Test CAGR", "Test Max Drawdown"]:
             if col in out.columns:
@@ -88,7 +126,6 @@ def _format_advanced_table(df, section_key=None):
         if "Fold" in out.columns:
             out["Fold"] = out["Fold"].map(lambda x: _fmt_num(x, 0))
         return out
-
     return out
 
 
@@ -97,7 +134,6 @@ def build_portfolio_evaluation(advanced_results, target_return=0.15):
     active = advanced_results.get("active_analysis", pd.DataFrame())
     var = advanced_results.get("var_analysis", pd.DataFrame())
     walk = advanced_results.get("walk_forward", pd.DataFrame())
-
     metrics = {}
     if isinstance(robustness, pd.DataFrame) and not robustness.empty:
         latest = robustness.iloc[-1]
@@ -117,13 +153,11 @@ def build_portfolio_evaluation(advanced_results, target_return=0.15):
         if not values.empty:
             metrics["OOS Sharpe trung vị"] = float(values.median())
             metrics["OOS Sharpe thấp nhất"] = float(values.min())
-
     cagr = metrics.get("CAGR", np.nan)
     sharpe = metrics.get("Sharpe", np.nan)
     max_dd = metrics.get("Max Drawdown", np.nan)
     ir = metrics.get("Information Ratio", np.nan)
     oos_sharpe = metrics.get("OOS Sharpe trung vị", np.nan)
-
     target_status = "Đạt" if pd.notna(cagr) and cagr >= target_return else "Không đạt" if pd.notna(cagr) else "Không đủ dữ liệu"
     target_comment = f"CAGR {_fmt_pct(cagr)} so với mục tiêu {_fmt_pct(target_return)}" if pd.notna(cagr) else "Không xác định được CAGR"
     risk_status = "Tốt" if pd.notna(sharpe) and sharpe >= 1.0 else "Khá" if pd.notna(sharpe) and sharpe >= 0.5 else "Yếu" if pd.notna(sharpe) and sharpe >= 0 else "Không đạt" if pd.notna(sharpe) else "Không đủ dữ liệu"
@@ -135,12 +169,10 @@ def build_portfolio_evaluation(advanced_results, target_return=0.15):
     active_comment = f"Information Ratio {_fmt_num(ir)}" if pd.notna(ir) else "Không xác định được Information Ratio"
     stability_status = "Ổn định" if pd.notna(oos_sharpe) and oos_sharpe >= 0.5 else "Trung bình" if pd.notna(oos_sharpe) and oos_sharpe >= 0 else "Không ổn định" if pd.notna(oos_sharpe) else "Không đủ dữ liệu"
     stability_comment = f"Sharpe ngoài mẫu trung vị {_fmt_num(oos_sharpe)}" if pd.notna(oos_sharpe) else "Chưa đủ mẫu để đánh giá ngoài mẫu"
-
     statuses = [target_status, risk_status, dd_status, active_status, stability_status]
     positive = sum(x in {"Đạt", "Tốt", "Khá", "Chấp nhận được", "Tích cực", "Ổn định"} for x in statuses)
     negative = sum(x in {"Không đạt", "Rủi ro cao", "Kém", "Không ổn định"} for x in statuses)
     overall = "Cần xem xét" if negative >= 2 else "Tích cực" if positive >= 4 else "Trung tính" if positive >= 2 else "Chưa đủ cơ sở"
-
     warnings = []
     if pd.notna(cagr) and cagr < target_return:
         warnings.append("Lợi suất thực tế chưa đạt mục tiêu.")
@@ -152,18 +184,12 @@ def build_portfolio_evaluation(advanced_results, target_return=0.15):
         warnings.append("Hiệu quả ngoài mẫu có dấu hiệu không ổn định.")
     if pd.notna(metrics.get("CVaR", np.nan)) and pd.notna(metrics.get("Historical VaR", np.nan)) and abs(metrics["CVaR"]) > abs(metrics["Historical VaR"]) * 1.5:
         warnings.append("Rủi ro đuôi phân phối lớn hơn đáng kể so với VaR lịch sử.")
-
     parts = []
-    if pd.notna(cagr):
-        parts.append(f"CAGR {_fmt_pct(cagr)}")
+    if pd.notna(cagr): parts.append(f"CAGR {_fmt_pct(cagr)}")
     parts.append(f"mục tiêu {_fmt_pct(target_return)}")
-    if pd.notna(sharpe):
-        parts.append(f"Sharpe {_fmt_num(sharpe)}")
-    if pd.notna(max_dd):
-        parts.append(f"Maximum Drawdown {_fmt_pct(max_dd)}")
-    if pd.notna(ir):
-        parts.append(f"Information Ratio {_fmt_num(ir)}")
-
+    if pd.notna(sharpe): parts.append(f"Sharpe {_fmt_num(sharpe)}")
+    if pd.notna(max_dd): parts.append(f"Maximum Drawdown {_fmt_pct(max_dd)}")
+    if pd.notna(ir): parts.append(f"Information Ratio {_fmt_num(ir)}")
     summary = pd.DataFrame([
         {"Tiêu chí": "Mục tiêu lợi suất", "Kết quả": target_status, "Đánh giá": target_comment},
         {"Tiêu chí": "Hiệu quả điều chỉnh rủi ro", "Kết quả": risk_status, "Đánh giá": risk_comment},
@@ -178,20 +204,20 @@ def _recalculate_selected_analysis(selected_results, advanced_results, target_re
     p_returns = selected_results.get("_portfolio_returns")
     if p_returns is None or not isinstance(p_returns, pd.Series) or p_returns.empty:
         return selected_results
-
     benchmark_returns = advanced_results.get("_advanced_source_benchmark_returns")
     source_returns = advanced_results.get("_advanced_source_returns")
     company_table = advanced_results.get("_advanced_source_company_table")
     rf = float(advanced_results.get("risk_free_rate", 0.0))
     fresh = dict(selected_results)
-
     try:
         if isinstance(source_returns, pd.DataFrame) and not source_returns.empty:
-            fresh["factor_proxy"] = factor_proxy_analysis(source_returns, company_table=company_table)
+            factor_detail, factor_summary = _portfolio_factor_tables(source_returns, p_returns, company_table)
+            fresh["factor_proxy"] = factor_detail
+            fresh["factor_summary"] = factor_summary
     except Exception as exc:
         fresh["factor_proxy"] = pd.DataFrame()
+        fresh["factor_summary"] = pd.DataFrame()
         fresh["factor_proxy_error"] = str(exc)
-
     if benchmark_returns is not None:
         try:
             factor_returns = pd.DataFrame({"Market": pd.Series(benchmark_returns)})
@@ -204,7 +230,6 @@ def _recalculate_selected_analysis(selected_results, advanced_results, target_re
     else:
         fresh["multifactor_regression"] = pd.DataFrame()
         fresh["active_analysis"] = pd.DataFrame()
-
     try:
         fresh["var_analysis"] = var_analysis(p_returns, level=0.95)
     except Exception as exc:
@@ -220,7 +245,6 @@ def _recalculate_selected_analysis(selected_results, advanced_results, target_re
     except Exception as exc:
         fresh["walk_forward"] = pd.DataFrame()
         fresh["walk_forward_error"] = str(exc)
-
     fresh["_portfolio_name"] = selected_results.get("_portfolio_name")
     fresh["_portfolio_returns"] = p_returns
     fresh["_target_return"] = target_return
@@ -231,10 +255,8 @@ def _render_one_portfolio(name, raw_results, source_results, target_return):
     selected = dict(raw_results)
     selected["_portfolio_name"] = name
     selected = _recalculate_selected_analysis(selected, source_results, target_return)
-
     st.markdown(f"### Danh mục: {name}")
-    st.caption("Các phân tích dưới đây được tính riêng từ chuỗi lợi suất ngày của danh mục này.")
-
+    st.caption("Các phân tích dưới đây được tính riêng từ chuỗi lợi suất của chính danh mục này.")
     sections = [
         ("11.1. PHÂN TÍCH YẾU TỐ", "factor_proxy"),
         ("11.2. HỒI QUY ĐA YẾU TỐ", "multifactor_regression"),
@@ -243,9 +265,22 @@ def _render_one_portfolio(name, raw_results, source_results, target_return):
         ("11.5. KIỂM ĐỊNH ĐỘ BỀN", "robustness"),
         ("11.6. KIỂM ĐỊNH NGOÀI MẪU", "walk_forward"),
     ]
-
+    table_titles = {
+        "factor_proxy": "Bảng 11.1. Yếu tố của các cổ phiếu và tỷ trọng trong danh mục",
+        "multifactor_regression": "Bảng 11.2. Kết quả hồi quy đa yếu tố",
+        "active_analysis": "Bảng 11.3. Hiệu quả danh mục chủ động so với VNINDEX",
+        "var_analysis": "Bảng 11.4. VaR và CVaR",
+        "robustness": "Bảng 11.5. Kiểm định độ bền",
+        "walk_forward": "Bảng 11.6. Kiểm định ngoài mẫu",
+    }
     for heading, key in sections:
         st.markdown(f"**{heading}**")
+        if key == "factor_proxy":
+            summary = selected.get("factor_summary", pd.DataFrame())
+            if isinstance(summary, pd.DataFrame) and not summary.empty:
+                st.markdown("**Bảng 11.1A. Phơi nhiễm yếu tố của danh mục**")
+                st.dataframe(_format_advanced_table(summary, "factor_summary"), use_container_width=True, hide_index=True)
+        st.markdown(f"_{table_titles[key]}_")
         table = selected.get(key, pd.DataFrame())
         if isinstance(table, pd.DataFrame) and not table.empty:
             st.dataframe(_format_advanced_table(table, key), use_container_width=True, hide_index=key == "factor_proxy")
@@ -255,13 +290,12 @@ def _render_one_portfolio(name, raw_results, source_results, target_return):
                 st.warning(f"Không thể thực hiện: {error}")
             else:
                 st.info("Không đủ dữ liệu hiện có để thực hiện phân tích này.")
-
     evaluation = build_portfolio_evaluation(selected, target_return=float(target_return))
     st.markdown("**11.7. ĐÁNH GIÁ DANH MỤC**")
+    st.markdown("_Bảng 11.7. Tổng hợp đánh giá danh mục_")
     st.markdown(f"Đánh giá tổng thể: **{evaluation['overall']}**")
     st.write(evaluation["conclusion"])
     st.dataframe(evaluation["summary"], use_container_width=True, hide_index=True)
-
     if evaluation["warnings"]:
         st.markdown("**Cảnh báo chính**")
         for warning in evaluation["warnings"]:
@@ -272,47 +306,26 @@ def render_advanced_section(advanced_results, title=None, target_return=0.15):
     if not isinstance(advanced_results, dict) or not advanced_results:
         st.info("Không đủ dữ liệu hiện có để thực hiện phân tích nâng cao.")
         return
-
     all_portfolios = advanced_results.get("_all_portfolios")
     if not isinstance(all_portfolios, dict) or not all_portfolios:
         all_portfolios = {advanced_results.get("_portfolio_name", "Complete Portfolio"): advanced_results}
-
-    # Target Return là mục tiêu lợi suất dùng để đánh giá, không phải một danh mục.
-    # Không đưa nó vào so sánh hay các tab phân tích danh mục.
-    excluded_portfolios = {
-        "target return",
-        "target return portfolio",
-        "target",
-    }
-    portfolio_names = [
-        name for name, value in all_portfolios.items()
-        if isinstance(value, dict)
-        and not value.get("error")
-        and str(name).strip().lower() not in excluded_portfolios
-    ]
-
+    excluded_portfolios = {"target return", "target return portfolio", "target"}
+    portfolio_names = [name for name, value in all_portfolios.items() if isinstance(value, dict) and not value.get("error") and str(name).strip().lower() not in excluded_portfolios]
     if not portfolio_names:
         st.warning("Không có danh mục hợp lệ để đánh giá.")
         return
-
     st.markdown("**Danh mục được đánh giá**")
-    st.caption("Mục 11 chỉ phân tích các danh mục thực sự được tạo ra. Mục tiêu lợi suất chỉ được dùng làm ngưỡng đánh giá, không được coi là một danh mục.")
-
+    st.caption("Mỗi tab được tính lại từ đúng chuỗi lợi suất của danh mục tương ứng. Các bảng yếu tố cũng hiển thị tỷ trọng và phơi nhiễm yếu tố riêng của từng danh mục.")
     evaluations = []
     calculated = {}
     for name in portfolio_names:
         selected = _recalculate_selected_analysis(dict(all_portfolios[name]), advanced_results, target_return)
         calculated[name] = selected
         evaluation = build_portfolio_evaluation(selected, target_return=float(target_return))
-        evaluations.append({
-            "Danh mục": name,
-            "Đánh giá tổng thể": evaluation["overall"],
-            "Kết luận": evaluation["conclusion"],
-        })
-
+        evaluations.append({"Danh mục": name, "Đánh giá tổng thể": evaluation["overall"], "Kết luận": evaluation["conclusion"]})
     st.markdown("### So sánh nhanh các danh mục")
+    st.markdown("_Bảng 11.0. So sánh nhanh các danh mục_")
     st.dataframe(pd.DataFrame(evaluations), use_container_width=True, hide_index=True)
-
     tabs = st.tabs(portfolio_names)
     for tab, name in zip(tabs, portfolio_names):
         with tab:
