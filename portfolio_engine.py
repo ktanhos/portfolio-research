@@ -86,12 +86,7 @@ def _portfolio_expected_points(portfolio_results):
 
 
 def _annotate_comparison_figures(portfolio_results=None):
-    """Chuẩn hóa biểu đồ Risk Return theo đúng 5 danh mục nguồn.
-
-    Không suy đoán tên theo thứ tự điểm Matplotlib. Toàn bộ tọa độ được
-    lấy trực tiếp từ portfolio_results. Nếu biểu đồ gốc thiếu một điểm,
-    điểm đó được bổ sung tại đúng tọa độ nguồn và được gắn nhãn trực tiếp.
-    """
+    """Chuẩn hóa biểu đồ Risk Return theo đúng 5 danh mục nguồn."""
     expected = _portfolio_expected_points(portfolio_results)
     if not expected:
         return
@@ -103,9 +98,6 @@ def _annotate_comparison_figures(portfolio_results=None):
             if "so sánh rủi ro" not in title and "rủi ro và lợi suất" not in title:
                 continue
 
-            # Giữ các đường tham chiếu như Target Return, nhưng dựng lại
-            # toàn bộ tập điểm danh mục từ dữ liệu nguồn để không bị thiếu
-            # Optimal Risky hoặc sai nhãn do thứ tự collection.
             for collection in list(ax.collections):
                 try:
                     collection.remove()
@@ -117,24 +109,100 @@ def _annotate_comparison_figures(portfolio_results=None):
                 except Exception:
                     pass
 
-            x_values = [x for _, x, _ in expected]
-            y_values = [y for _, _, y in expected]
+            x_values = [x * 100 for _, x, _ in expected]
+            y_values = [y * 100 for _, _, y in expected]
             ax.scatter(x_values, y_values, s=90, zorder=5)
 
-            for name, x, y in expected:
+            for i, (name, x, y) in enumerate(expected):
+                offsets = [
+                    (10, 10),
+                    (10, -18),
+                    (-10, 10),
+                    (-10, -18),
+                    (12, 20),
+                ]
+                dx, dy = offsets[i % len(offsets)]
                 ax.annotate(
                     name,
-                    (x, y),
-                    xytext=(8, 8),
+                    (x * 100, y * 100),
+                    xytext=(dx, dy),
                     textcoords="offset points",
+                    ha="left" if dx >= 0 else "right",
+                    va="bottom" if dy >= 0 else "top",
                     fontsize=9,
-                    bbox=dict(boxstyle="round,pad=0.2", alpha=0.75),
+                    bbox=dict(boxstyle="round,pad=0.25", alpha=0.8),
                     zorder=10,
                 )
 
             ax.set_title("So sánh rủi ro và lợi suất")
             ax.set_xlabel("Rủi ro năm (%)")
             ax.set_ylabel("Lợi suất kỳ vọng năm (%)")
+
+
+def _render_risk_return_figure(portfolio_results, target_return):
+    """Dựng lại biểu đồ Risk Return từ dữ liệu nguồn và luôn gắn tên danh mục."""
+    expected = _portfolio_expected_points(portfolio_results)
+    if not expected:
+        return
+
+    # Đóng các biểu đồ Risk Return cũ để tránh xuất hiện đồng thời
+    # một biểu đồ không có nhãn và một biểu đồ đã sửa.
+    for fig_num in list(plt.get_fignums()):
+        fig = plt.figure(fig_num)
+        matched = False
+        for ax in fig.axes:
+            title = str(ax.get_title()).strip().lower()
+            if "so sánh rủi ro" in title or "rủi ro và lợi suất" in title:
+                matched = True
+                break
+        if matched:
+            plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(11, 6))
+
+    for i, (name, risk, ret) in enumerate(expected):
+        ax.scatter(
+            risk * 100,
+            ret * 100,
+            s=110,
+            zorder=5,
+        )
+
+        offsets = [
+            (10, 10),
+            (10, -18),
+            (-10, 10),
+            (-10, -18),
+            (12, 20),
+        ]
+        dx, dy = offsets[i % len(offsets)]
+
+        ax.annotate(
+            name,
+            (risk * 100, ret * 100),
+            xytext=(dx, dy),
+            textcoords="offset points",
+            ha="left" if dx >= 0 else "right",
+            va="bottom" if dy >= 0 else "top",
+            fontsize=9,
+            bbox=dict(boxstyle="round,pad=0.25", alpha=0.8),
+            zorder=10,
+        )
+
+    ax.axhline(
+        float(target_return) * 100,
+        linestyle="--",
+        linewidth=1.3,
+        label=f"Mục tiêu {float(target_return):.1%}",
+    )
+
+    ax.set_xlabel("Rủi ro năm (%)")
+    ax.set_ylabel("Lợi suất kỳ vọng năm (%)")
+    ax.set_title("So sánh rủi ro và lợi suất")
+    ax.legend()
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    plt.show()
 
 
 def _portfolio_name_from_title(title, names):
@@ -193,8 +261,6 @@ def _clean_zero_weight_pies(portfolio_results, tickers=None):
             if not zero_labels:
                 continue
 
-            # Xóa lát cắt bằng 0 và nhãn tương ứng. Dữ liệu weights trong
-            # portfolio_results hoàn toàn không bị thay đổi.
             for wedge in list(wedges):
                 label = str(wedge.get_label()).strip()
                 if label in zero_labels:
@@ -319,16 +385,24 @@ def run_research(*args, **kwargs):
     if not isinstance(results, dict):
         return results
 
-    # Chuẩn hóa toàn bộ biểu đồ ngay sau khi engine tạo xong figures.
-    # Không thay đổi dữ liệu hoặc công thức tính danh mục.
-    _postprocess_portfolio_figures(
-        results.get("portfolio_results"),
-        tickers=list(results.get("returns").columns) if isinstance(results.get("returns"), pd.DataFrame) else kwargs.get("tickers", []),
-    )
-
     returns = results.get("returns")
     rf = kwargs.get("risk_free_rate", results.get("risk_free_rate", 0.0))
     target = kwargs.get("target_return", results.get("target_return", 0.15))
+
+    # Dựng lại riêng biểu đồ Risk Return từ portfolio_results.
+    # Không phụ thuộc vào collection của biểu đồ gốc, vì vậy tên danh mục
+    # luôn được lấy đúng từ dữ liệu nguồn và hiển thị trực tiếp trên điểm.
+    _render_risk_return_figure(
+        results.get("portfolio_results"),
+        target,
+    )
+
+    # Các biểu đồ khác chỉ được hậu xử lý, không thay đổi công thức tính.
+    _clean_zero_weight_pies(
+        results.get("portfolio_results"),
+        tickers=list(returns.columns) if isinstance(returns, pd.DataFrame) else kwargs.get("tickers", []),
+    )
+
     results["risk_free_rate"] = float(rf)
     portfolio_returns = _build_portfolio_returns(results)
     results["portfolio_returns"] = portfolio_returns
