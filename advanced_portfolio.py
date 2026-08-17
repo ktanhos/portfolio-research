@@ -168,7 +168,7 @@ def robustness_analysis(r, target_return=0.15, windows=(126, 252, 504)):
         if len(r) < w:
             continue
         x = r.iloc[-w:]
-        rows.append({"Cửa sổ": w, "CAGR": _annualized_return(x), "Rủi ro": _volatility(x), "Sharpe": _sharpe(x, 0.0), "Max Drawdown": _max_drawdown(x), "Đạt mục tiêu": "Có" if _annualized_return(x) >= target_return else "Không"})
+        rows.append({"Rolling Window": w, "CAGR": _annualized_return(x), "Rủi ro": _volatility(x), "Sharpe": _sharpe(x, 0.0), "Max Drawdown": _max_drawdown(x), "Đạt mục tiêu": "Có" if _annualized_return(x) >= target_return else "Không"})
     return pd.DataFrame(rows)
 
 
