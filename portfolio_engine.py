@@ -57,16 +57,7 @@ _core.income_row_value = income_row_value
 _core_run_research = _core.run_research
 
 
-def _annotate_comparison_figures(portfolio_results=None):
-    """Gắn nhãn theo đúng tọa độ lợi suất và rủi ro của từng danh mục.
-
-    Không dùng thứ tự các điểm trong Matplotlib. Mỗi nhãn được tạo từ chính
-    kết quả của portfolio_results rồi ghép với điểm gần nhất trên biểu đồ.
-    Vì vậy thứ tự vẽ thay đổi cũng không làm sai tên danh mục.
-    """
-    if not isinstance(portfolio_results, dict) or not portfolio_results:
-        return
-
+def _portfolio_expected_points(portfolio_results):
     expected = []
     preferred_order = [
         "Naive",
@@ -75,7 +66,8 @@ def _annotate_comparison_figures(portfolio_results=None):
         "Maximum Return",
         "Complete Portfolio",
     ]
-
+    if not isinstance(portfolio_results, dict):
+        return expected
     for name in preferred_order:
         item = portfolio_results.get(name)
         if not isinstance(item, (tuple, list)) or len(item) < 2:
@@ -90,76 +82,141 @@ def _annotate_comparison_figures(portfolio_results=None):
             continue
         if np.isfinite(x) and np.isfinite(y):
             expected.append((name, x, y))
+    return expected
 
+
+def _annotate_comparison_figures(portfolio_results=None):
+    """Chuẩn hóa biểu đồ Risk Return theo đúng 5 danh mục nguồn.
+
+    Không suy đoán tên theo thứ tự điểm Matplotlib. Toàn bộ tọa độ được
+    lấy trực tiếp từ portfolio_results. Nếu biểu đồ gốc thiếu một điểm,
+    điểm đó được bổ sung tại đúng tọa độ nguồn và được gắn nhãn trực tiếp.
+    """
+    expected = _portfolio_expected_points(portfolio_results)
     if not expected:
         return
 
     for fig_num in plt.get_fignums():
         fig = plt.figure(fig_num)
         for ax in fig.axes:
-            title = str(ax.get_title()).lower()
-            if "so sánh rủi ro" not in title:
+            title = str(ax.get_title()).strip().lower()
+            if "so sánh rủi ro" not in title and "rủi ro và lợi suất" not in title:
                 continue
 
-            points = []
-            for collection in ax.collections:
+            # Giữ các đường tham chiếu như Target Return, nhưng dựng lại
+            # toàn bộ tập điểm danh mục từ dữ liệu nguồn để không bị thiếu
+            # Optimal Risky hoặc sai nhãn do thứ tự collection.
+            for collection in list(ax.collections):
                 try:
-                    offsets = collection.get_offsets()
-                    for value in offsets:
-                        x = float(value[0])
-                        y = float(value[1])
-                        if np.isfinite(x) and np.isfinite(y):
-                            points.append((x, y))
+                    collection.remove()
                 except Exception:
-                    continue
+                    pass
+            for text in list(ax.texts):
+                try:
+                    text.remove()
+                except Exception:
+                    pass
 
-            if not points:
-                continue
+            x_values = [x for _, x, _ in expected]
+            y_values = [y for _, _, y in expected]
+            ax.scatter(x_values, y_values, s=90, zorder=5)
 
-            # Nếu biểu đồ đã có đúng số nhãn thì không thêm lại.
-            existing_names = {
-                str(text.get_text()).strip()
-                for text in ax.texts
-                if str(text.get_text()).strip()
-            }
-
-            # Ghép mỗi danh mục với điểm gần nhất theo khoảng cách chuẩn hóa.
-            # Chuẩn hóa hai trục để rủi ro và lợi suất có trọng số tương đương.
-            all_x = [p[1] for p in expected] + [p[0] for p in points]
-            all_y = [p[2] for p in expected] + [p[1] for p in points]
-            scale_x = max(max(all_x) - min(all_x), 1e-12)
-            scale_y = max(max(all_y) - min(all_y), 1e-12)
-
-            candidates = []
-            for name, ex, ey in expected:
-                for idx, (px, py) in enumerate(points):
-                    distance = ((ex - px) / scale_x) ** 2 + ((ey - py) / scale_y) ** 2
-                    candidates.append((distance, name, idx, px, py))
-
-            # Ghép một điểm cho một danh mục, ưu tiên khoảng cách nhỏ nhất.
-            candidates.sort(key=lambda item: item[0])
-            assigned_names = set()
-            assigned_points = set()
-            matches = []
-            for distance, name, idx, px, py in candidates:
-                if name in assigned_names or idx in assigned_points:
-                    continue
-                assigned_names.add(name)
-                assigned_points.add(idx)
-                matches.append((name, px, py))
-
-            for name, x, y in matches:
-                if name in existing_names:
-                    continue
+            for name, x, y in expected:
                 ax.annotate(
                     name,
                     (x, y),
                     xytext=(8, 8),
                     textcoords="offset points",
                     fontsize=9,
-                    bbox=dict(boxstyle="round,pad=0.2", alpha=0.7),
+                    bbox=dict(boxstyle="round,pad=0.2", alpha=0.75),
                     zorder=10,
                 )
+
+            ax.set_title("So sánh rủi ro và lợi suất")
+            ax.set_xlabel("Rủi ro năm (%)")
+            ax.set_ylabel("Lợi suất kỳ vọng năm (%)")
+
+
+def _portfolio_name_from_title(title, names):
+    text = str(title or "").strip().lower()
+    for name in names:
+        if name.lower() in text:
+            return name
+    return None
+
+
+def _clean_zero_weight_pies(portfolio_results, tickers=None):
+    """Loại cổ phiếu có tỷ trọng 0% khỏi pie chart nhưng không sửa dữ liệu gốc."""
+    if not isinstance(portfolio_results, dict):
+        return
+    preferred = [
+        "Naive",
+        "Minimum Variance",
+        "Optimal Risky",
+        "Maximum Return",
+        "Complete Portfolio",
+    ]
+    names = [name for name in preferred if name in portfolio_results]
+    tickers = list(tickers or [])
+
+    for fig_num in plt.get_fignums():
+        fig = plt.figure(fig_num)
+        for ax in fig.axes:
+            wedges = [patch for patch in ax.patches if patch.__class__.__name__ == "Wedge"]
+            if not wedges:
+                continue
+
+            title = ax.get_title()
+            portfolio_name = _portfolio_name_from_title(title, names)
+            if portfolio_name is None and len(names) == 1:
+                portfolio_name = names[0]
+            if portfolio_name is None:
+                continue
+
+            item = portfolio_results.get(portfolio_name)
+            if not isinstance(item, (tuple, list)) or len(item) < 1:
+                continue
+            try:
+                weights = np.asarray(item[0], dtype=float).reshape(-1)
+            except Exception:
+                continue
+            if len(weights) == 0:
+                continue
+
+            labels = tickers[:len(weights)] if tickers else []
+            zero_labels = {
+                str(labels[i]).strip()
+                for i, weight in enumerate(weights)
+                if i < len(labels) and np.isfinite(weight) and abs(weight) <= 1e-10
+            }
+
+            if not zero_labels:
+                continue
+
+            # Xóa lát cắt bằng 0 và nhãn tương ứng. Dữ liệu weights trong
+            # portfolio_results hoàn toàn không bị thay đổi.
+            for wedge in list(wedges):
+                label = str(wedge.get_label()).strip()
+                if label in zero_labels:
+                    try:
+                        wedge.remove()
+                    except Exception:
+                        pass
+
+            for text in list(ax.texts):
+                if str(text.get_text()).strip() in zero_labels:
+                    try:
+                        text.remove()
+                    except Exception:
+                        pass
+
+            if portfolio_name:
+                ax.set_title(f"Phân bổ danh mục — {portfolio_name}")
+
+
+def _postprocess_portfolio_figures(portfolio_results, tickers=None):
+    _annotate_comparison_figures(portfolio_results)
+    _clean_zero_weight_pies(portfolio_results, tickers=tickers)
 
 
 def build_advanced_portfolio_analysis(returns, portfolio_returns, benchmark_returns=None, company_table=None, risk_free_rate=0.0, target_return=0.15):
@@ -262,10 +319,12 @@ def run_research(*args, **kwargs):
     if not isinstance(results, dict):
         return results
 
-    # Gắn nhãn sau khi engine đã tạo xong toàn bộ biểu đồ và có sẵn
-    # portfolio_results. Việc ghép nhãn dựa trên tọa độ thật của từng danh mục,
-    # không dựa vào thứ tự các điểm mà Matplotlib trả về.
-    _annotate_comparison_figures(results.get("portfolio_results"))
+    # Chuẩn hóa toàn bộ biểu đồ ngay sau khi engine tạo xong figures.
+    # Không thay đổi dữ liệu hoặc công thức tính danh mục.
+    _postprocess_portfolio_figures(
+        results.get("portfolio_results"),
+        tickers=list(results.get("returns").columns) if isinstance(results.get("returns"), pd.DataFrame) else kwargs.get("tickers", []),
+    )
 
     returns = results.get("returns")
     rf = kwargs.get("risk_free_rate", results.get("risk_free_rate", 0.0))
