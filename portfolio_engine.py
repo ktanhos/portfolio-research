@@ -57,6 +57,169 @@ _core.income_row_value = income_row_value
 _core_run_research = _core.run_research
 
 
+def _is_bank_industry(value):
+    text = _core.strip_accents(str(value or "")).lower()
+    return "ngan hang" in text
+
+
+def _fresh_bank_revenue(ticker):
+    """Lấy doanh thu chuẩn cho ngân hàng từ Tổng thu nhập hoạt động.
+
+    Ngân hàng không có dòng Doanh thu thuần như doanh nghiệp thông thường.
+    Chỉ tiêu tương đương về quy mô hoạt động là Tổng thu nhập hoạt động,
+    gồm thu nhập lãi thuần và thu nhập ngoài lãi.
+
+    Hàm này cố ý bỏ qua cache cũ để khi chạy lại ứng dụng có thể lấy năm
+    báo cáo mới nhất từ Vnstock.
+    """
+    try:
+        fun = _core.Fundamental()
+        income = _core.normalize_columns(
+            fun.equity(ticker).income_statement(
+                period="year",
+                orient="report"
+            )
+        )
+        if income is None or income.empty:
+            return np.nan, None
+
+        item_col = _core.find_col(
+            income,
+            ["item", "item_name", "name", "indicator"]
+        )
+        if item_col is None:
+            return np.nan, None
+
+        year_cols = [
+            col for col in income.columns
+            if str(col).isdigit() and len(str(col)) == 4
+        ]
+        if not year_cols:
+            return np.nan, None
+        year_cols = sorted(
+            year_cols,
+            key=lambda x: int(str(x)),
+            reverse=True
+        )
+
+        normalized_items = (
+            income[item_col]
+            .astype(str)
+            .map(_core.strip_accents)
+            .str.lower()
+            .str.replace("_", " ", regex=False)
+            .str.replace("-", " ", regex=False)
+            .str.replace(r"\s+", " ", regex=True)
+            .str.strip()
+        )
+
+        keywords = [
+            "tong thu nhap hoat dong",
+            "total operating income",
+            "total operating revenue",
+            "operating income total",
+        ]
+
+        value = np.nan
+        selected_year = None
+        for keyword in keywords:
+            mask = normalized_items.str.contains(
+                _core.strip_accents(keyword).lower(),
+                regex=False,
+                na=False
+            )
+            matches = income.loc[mask]
+            if matches.empty:
+                continue
+            row = matches.iloc[0]
+            for year in year_cols:
+                candidate = _core.safe_float(row[year])
+                if pd.notna(candidate):
+                    value = candidate
+                    selected_year = str(year)
+                    break
+            if pd.notna(value):
+                break
+
+        if pd.isna(value):
+            return np.nan, None
+
+        has_unit_metadata = False
+        for col in ("unit_multiplier", "unit"):
+            if col in income.columns:
+                values = income[col].dropna().astype(str).str.strip()
+                if not values.empty and (values != "").any():
+                    has_unit_metadata = True
+                    break
+
+        if not has_unit_metadata:
+            value = float(value) * 1000.0
+
+        return value, selected_year
+    except Exception as exc:
+        print(f"Không cập nhật được doanh thu ngân hàng {ticker}: {exc}")
+        return np.nan, None
+
+
+def _refresh_bank_revenues(results):
+    """Cập nhật doanh thu mới nhất cho các mã thuộc ngành ngân hàng."""
+    if not isinstance(results, dict):
+        return
+    company_table = results.get("company_table")
+    if not isinstance(company_table, pd.DataFrame) or company_table.empty:
+        return
+    if "Mã" not in company_table.columns or "Ngành" not in company_table.columns:
+        return
+
+    updated = company_table.copy()
+    for idx, row in updated.iterrows():
+        if not _is_bank_industry(row.get("Ngành")):
+            continue
+        ticker = str(row.get("Mã", "")).strip().upper()
+        if not ticker:
+            continue
+        revenue, year = _fresh_bank_revenue(ticker)
+        if pd.notna(revenue):
+            updated.at[idx, "Doanh thu gần nhất"] = revenue
+            if "Năm doanh thu" in updated.columns:
+                updated.at[idx, "Năm doanh thu"] = year
+
+    results["company_table"] = updated
+
+
+def _is_risk_return_figure(fig):
+    if fig is None:
+        return False
+    for ax in fig.axes:
+        title = str(ax.get_title()).strip().lower()
+        if "so sánh rủi ro" in title or "rủi ro và lợi suất" in title:
+            return True
+    return False
+
+
+def _run_core_without_original_risk_return(*args, **kwargs):
+    """Không đưa biểu đồ Risk Return cũ vào bộ hình của Streamlit."""
+    original_show = plt.show
+
+    def filtered_show(*show_args, **show_kwargs):
+        active = [plt.figure(num) for num in list(plt.get_fignums())]
+        risk_figures = [fig for fig in active if _is_risk_return_figure(fig)]
+        if risk_figures:
+            for fig in risk_figures:
+                try:
+                    plt.close(fig)
+                except Exception:
+                    pass
+            return
+        original_show(*show_args, **show_kwargs)
+
+    plt.show = filtered_show
+    try:
+        return _core_run_research(*args, **kwargs)
+    finally:
+        plt.show = original_show
+
+
 def _portfolio_expected_points(portfolio_results):
     expected = []
     preferred_order = [
@@ -145,17 +308,9 @@ def _render_risk_return_figure(portfolio_results, target_return):
     if not expected:
         return
 
-    # Đóng các biểu đồ Risk Return cũ để tránh xuất hiện đồng thời
-    # một biểu đồ không có nhãn và một biểu đồ đã sửa.
     for fig_num in list(plt.get_fignums()):
         fig = plt.figure(fig_num)
-        matched = False
-        for ax in fig.axes:
-            title = str(ax.get_title()).strip().lower()
-            if "so sánh rủi ro" in title or "rủi ro và lợi suất" in title:
-                matched = True
-                break
-        if matched:
+        if _is_risk_return_figure(fig):
             plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(11, 6))
@@ -381,7 +536,7 @@ def _run_all_advanced(returns, portfolio_returns, benchmark_returns, company_tab
 
 def run_research(*args, **kwargs):
     global _LAST_RESULTS
-    results = _core_run_research(*args, **kwargs)
+    results = _run_core_without_original_risk_return(*args, **kwargs)
     if not isinstance(results, dict):
         return results
 
@@ -389,9 +544,11 @@ def run_research(*args, **kwargs):
     rf = kwargs.get("risk_free_rate", results.get("risk_free_rate", 0.0))
     target = kwargs.get("target_return", results.get("target_return", 0.15))
 
+    # Cập nhật riêng doanh thu của ngân hàng theo Tổng thu nhập hoạt động.
+    _refresh_bank_revenues(results)
+
     # Dựng lại riêng biểu đồ Risk Return từ portfolio_results.
-    # Không phụ thuộc vào collection của biểu đồ gốc, vì vậy tên danh mục
-    # luôn được lấy đúng từ dữ liệu nguồn và hiển thị trực tiếp trên điểm.
+    # Biểu đồ Risk Return gốc của core đã bị chặn ở _run_core_without_original_risk_return.
     _render_risk_return_figure(
         results.get("portfolio_results"),
         target,
