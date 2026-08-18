@@ -4,10 +4,7 @@ import matplotlib.pyplot as plt
 
 import portfolio_engine_core as _core
 from margin_patch import install_margin_patch
-from input_normalizer import (
-    normalize_company_dataframe,
-    normalize_income_dataframe,
-)
+from input_normalizer import normalize_company_dataframe, normalize_income_dataframe
 from advanced_portfolio import (
     factor_proxy_analysis,
     multifactor_regression,
@@ -19,6 +16,8 @@ from advanced_portfolio import (
 
 install_margin_patch(_core)
 _original_get_company_info = _core.get_company_info
+_original_income_row_value = _core.income_row_value
+_core_run_research = _core.run_research
 _LAST_RESULTS = None
 
 
@@ -33,7 +32,6 @@ def get_company_info(tickers, prices=None):
 
 
 _core.get_company_info = get_company_info
-_original_income_row_value = _core.income_row_value
 
 
 def income_row_value(income, keywords, exclude_keywords=None):
@@ -47,14 +45,17 @@ def income_row_value(income, keywords, exclude_keywords=None):
             if not values.empty and (values != "").any():
                 has_unit_metadata = True
                 break
-    value, year, item = _original_income_row_value(normalized, keywords, exclude_keywords=exclude_keywords)
+    value, year, item = _original_income_row_value(
+        normalized,
+        keywords,
+        exclude_keywords=exclude_keywords,
+    )
     if pd.notna(value) and not has_unit_metadata:
         value = float(value) * 1000.0
     return value, year, item
 
 
 _core.income_row_value = income_row_value
-_core_run_research = _core.run_research
 
 
 def _is_bank_industry(value):
@@ -63,46 +64,28 @@ def _is_bank_industry(value):
 
 
 def _fresh_bank_revenue(ticker):
-    """Lấy doanh thu chuẩn cho ngân hàng từ Tổng thu nhập hoạt động.
-
-    Ngân hàng không có dòng Doanh thu thuần như doanh nghiệp thông thường.
-    Chỉ tiêu tương đương về quy mô hoạt động là Tổng thu nhập hoạt động,
-    gồm thu nhập lãi thuần và thu nhập ngoài lãi.
-
-    Hàm này cố ý bỏ qua cache cũ để khi chạy lại ứng dụng có thể lấy năm
-    báo cáo mới nhất từ Vnstock.
-    """
+    """Lấy Tổng thu nhập hoạt động mới nhất của ngân hàng, bỏ qua cache cũ."""
     try:
         fun = _core.Fundamental()
         income = _core.normalize_columns(
-            fun.equity(ticker).income_statement(
-                period="year",
-                orient="report"
-            )
+            fun.equity(ticker).income_statement(period="year", orient="report")
         )
         if income is None or income.empty:
             return np.nan, None
 
-        item_col = _core.find_col(
-            income,
-            ["item", "item_name", "name", "indicator"]
-        )
+        item_col = _core.find_col(income, ["item", "item_name", "name", "indicator"])
         if item_col is None:
             return np.nan, None
 
-        year_cols = [
-            col for col in income.columns
-            if str(col).isdigit() and len(str(col)) == 4
-        ]
+        year_cols = sorted(
+            [c for c in income.columns if str(c).isdigit() and len(str(c)) == 4],
+            key=lambda x: int(str(x)),
+            reverse=True,
+        )
         if not year_cols:
             return np.nan, None
-        year_cols = sorted(
-            year_cols,
-            key=lambda x: int(str(x)),
-            reverse=True
-        )
 
-        normalized_items = (
+        items = (
             income[item_col]
             .astype(str)
             .map(_core.strip_accents)
@@ -120,58 +103,45 @@ def _fresh_bank_revenue(ticker):
             "operating income total",
         ]
 
-        value = np.nan
-        selected_year = None
         for keyword in keywords:
-            mask = normalized_items.str.contains(
+            mask = items.str.contains(
                 _core.strip_accents(keyword).lower(),
                 regex=False,
-                na=False
+                na=False,
             )
             matches = income.loc[mask]
             if matches.empty:
                 continue
             row = matches.iloc[0]
             for year in year_cols:
-                candidate = _core.safe_float(row[year])
-                if pd.notna(candidate):
-                    value = candidate
-                    selected_year = str(year)
-                    break
-            if pd.notna(value):
-                break
-
-        if pd.isna(value):
-            return np.nan, None
-
-        has_unit_metadata = False
-        for col in ("unit_multiplier", "unit"):
-            if col in income.columns:
-                values = income[col].dropna().astype(str).str.strip()
-                if not values.empty and (values != "").any():
-                    has_unit_metadata = True
-                    break
-
-        if not has_unit_metadata:
-            value = float(value) * 1000.0
-
-        return value, selected_year
+                value = _core.safe_float(row[year])
+                if pd.notna(value):
+                    has_unit_metadata = False
+                    for col in ("unit_multiplier", "unit"):
+                        if col in income.columns:
+                            values = income[col].dropna().astype(str).str.strip()
+                            if not values.empty and (values != "").any():
+                                has_unit_metadata = True
+                                break
+                    if not has_unit_metadata:
+                        value = float(value) * 1000.0
+                    return value, str(year)
+        return np.nan, None
     except Exception as exc:
         print(f"Không cập nhật được doanh thu ngân hàng {ticker}: {exc}")
         return np.nan, None
 
 
 def _refresh_bank_revenues(results):
-    """Cập nhật doanh thu mới nhất cho các mã thuộc ngành ngân hàng."""
     if not isinstance(results, dict):
         return
-    company_table = results.get("company_table")
-    if not isinstance(company_table, pd.DataFrame) or company_table.empty:
+    table = results.get("company_table")
+    if not isinstance(table, pd.DataFrame) or table.empty:
         return
-    if "Mã" not in company_table.columns or "Ngành" not in company_table.columns:
+    if "Mã" not in table.columns or "Ngành" not in table.columns:
         return
 
-    updated = company_table.copy()
+    updated = table.copy()
     for idx, row in updated.iterrows():
         if not _is_bank_industry(row.get("Ngành")):
             continue
@@ -183,35 +153,54 @@ def _refresh_bank_revenues(results):
             updated.at[idx, "Doanh thu gần nhất"] = revenue
             if "Năm doanh thu" in updated.columns:
                 updated.at[idx, "Năm doanh thu"] = year
-
     results["company_table"] = updated
 
 
-def _is_risk_return_figure(fig):
+# -----------------------------------------------------------------------------
+# BIỂU ĐỒ
+# -----------------------------------------------------------------------------
+
+_PREFERRED_PORTFOLIOS = [
+    "Naive",
+    "Minimum Variance",
+    "Optimal Risky",
+    "Maximum Return",
+    "Complete Portfolio",
+]
+
+
+def _is_filtered_chart(fig):
     if fig is None:
         return False
+    titles = []
     for ax in fig.axes:
-        title = str(ax.get_title()).strip().lower()
-        if "so sánh rủi ro" in title or "rủi ro và lợi suất" in title:
-            return True
-    return False
+        titles.append(str(ax.get_title()).strip().lower())
+    joined = " | ".join(titles)
+    return any(
+        marker in joined
+        for marker in (
+            "so sánh rủi ro và lợi suất",
+            "danh mục so với mục tiêu lợi nhuận",
+            "đường biên markowitz",
+        )
+    )
 
 
-def _run_core_without_original_risk_return(*args, **kwargs):
-    """Không đưa biểu đồ Risk Return cũ vào bộ hình của Streamlit."""
+def _run_core_without_original_target_charts(*args, **kwargs):
+    """Chặn các biểu đồ có nhãn chồng nhau của lõi và vẽ lại một bản duy nhất."""
     original_show = plt.show
 
     def filtered_show(*show_args, **show_kwargs):
         active = [plt.figure(num) for num in list(plt.get_fignums())]
-        risk_figures = [fig for fig in active if _is_risk_return_figure(fig)]
-        if risk_figures:
-            for fig in risk_figures:
+        for fig in active:
+            if _is_filtered_chart(fig):
                 try:
                     plt.close(fig)
                 except Exception:
                     pass
-            return
-        original_show(*show_args, **show_kwargs)
+        remaining = [fig for fig in active if fig.number in plt.get_fignums()]
+        if remaining:
+            original_show(*show_args, **show_kwargs)
 
     plt.show = filtered_show
     try:
@@ -220,141 +209,179 @@ def _run_core_without_original_risk_return(*args, **kwargs):
         plt.show = original_show
 
 
-def _portfolio_expected_points(portfolio_results):
-    expected = []
-    preferred_order = [
-        "Naive",
-        "Minimum Variance",
-        "Optimal Risky",
-        "Maximum Return",
-        "Complete Portfolio",
-    ]
+def _portfolio_points(portfolio_results, include_target=False):
+    points = []
     if not isinstance(portfolio_results, dict):
-        return expected
-    for name in preferred_order:
+        return points
+    names = list(_PREFERRED_PORTFOLIOS)
+    if include_target:
+        names.append("Target Return")
+    for name in names:
         item = portfolio_results.get(name)
         if not isinstance(item, (tuple, list)) or len(item) < 2:
             continue
-        stats = item[1]
-        if not isinstance(stats, dict):
+        weights, stats = item[0], item[1]
+        if weights is None or not isinstance(stats, dict):
             continue
         try:
-            x = float(stats.get("volatility", np.nan))
-            y = float(stats.get("return", np.nan))
+            x = float(stats.get("volatility", np.nan)) * 100.0
+            y = float(stats.get("return", np.nan)) * 100.0
         except (TypeError, ValueError):
             continue
         if np.isfinite(x) and np.isfinite(y):
-            expected.append((name, x, y))
-    return expected
+            points.append((name, x, y))
+    return points
 
 
-def _annotate_comparison_figures(portfolio_results=None):
-    """Chuẩn hóa biểu đồ Risk Return theo đúng 5 danh mục nguồn."""
-    expected = _portfolio_expected_points(portfolio_results)
-    if not expected:
+def _annotation_candidates():
+    return [
+        (12, 14), (12, -26), (-12, 14), (-12, -26),
+        (30, 20), (30, -22), (-30, 20), (-30, -22),
+        (48, 0), (-48, 0), (0, 30), (0, -34),
+    ]
+
+
+def _bbox_overlap(a, b):
+    x_overlap = max(0.0, min(a.x1, b.x1) - max(a.x0, b.x0))
+    y_overlap = max(0.0, min(a.y1, b.y1) - max(a.y0, b.y0))
+    return x_overlap * y_overlap
+
+
+def _annotate_clean(ax, points, fontsize=9, duplicate_tolerance=0.20):
+    """Gắn nhãn có kiểm soát va chạm, đặc biệt với các điểm trùng nhau."""
+    if not points:
         return
 
-    for fig_num in plt.get_fignums():
-        fig = plt.figure(fig_num)
-        for ax in fig.axes:
-            title = str(ax.get_title()).strip().lower()
-            if "so sánh rủi ro" not in title and "rủi ro và lợi suất" not in title:
-                continue
+    fig = ax.figure
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    placed = []
+    candidates = _annotation_candidates()
 
-            for collection in list(ax.collections):
-                try:
-                    collection.remove()
-                except Exception:
-                    pass
-            for text in list(ax.texts):
-                try:
-                    text.remove()
-                except Exception:
-                    pass
+    for name, x, y in points:
+        near_count = sum(
+            abs(x - ox) <= duplicate_tolerance
+            and abs(y - oy) <= duplicate_tolerance
+            and other_name != name
+            for other_name, ox, oy in points
+        )
 
-            x_values = [x * 100 for _, x, _ in expected]
-            y_values = [y * 100 for _, _, y in expected]
-            ax.scatter(x_values, y_values, s=90, zorder=5)
+        local_candidates = candidates
+        if near_count:
+            local_candidates = [
+                (30, 22), (-30, 22), (30, -28), (-30, -28),
+                (52, 4), (-52, 4), (0, 34), (0, -38),
+                (70, 20), (-70, 20),
+            ]
 
-            for i, (name, x, y) in enumerate(expected):
-                offsets = [
-                    (10, 10),
-                    (10, -18),
-                    (-10, 10),
-                    (-10, -18),
-                    (12, 20),
-                ]
-                dx, dy = offsets[i % len(offsets)]
-                ax.annotate(
-                    name,
-                    (x * 100, y * 100),
-                    xytext=(dx, dy),
-                    textcoords="offset points",
-                    ha="left" if dx >= 0 else "right",
-                    va="bottom" if dy >= 0 else "top",
-                    fontsize=9,
-                    bbox=dict(boxstyle="round,pad=0.25", alpha=0.8),
-                    zorder=10,
-                )
+        best = None
+        for dx, dy in local_candidates:
+            ann = ax.annotate(
+                name,
+                (x, y),
+                xytext=(dx, dy),
+                textcoords="offset points",
+                ha="left" if dx >= 0 else "right",
+                va="bottom" if dy >= 0 else "top",
+                fontsize=fontsize,
+                bbox=dict(boxstyle="round,pad=0.22", alpha=0.78),
+                arrowprops=(
+                    dict(arrowstyle="-", alpha=0.35, linewidth=0.8)
+                    if abs(dx) + abs(dy) >= 45 else None
+                ),
+                annotation_clip=True,
+                zorder=20,
+            )
+            fig.canvas.draw()
+            bbox = ann.get_window_extent(renderer).expanded(1.08, 1.15)
+            overlap = sum(_bbox_overlap(bbox, old) for old in placed)
+            outside = (
+                max(0.0, fig.bbox.x0 - bbox.x0)
+                + max(0.0, bbox.x1 - fig.bbox.x1)
+                + max(0.0, fig.bbox.y0 - bbox.y0)
+                + max(0.0, bbox.y1 - fig.bbox.y1)
+            )
+            score = overlap * 1000.0 + outside * 1000.0 + 0.01 * (dx * dx + dy * dy)
+            if best is None or score < best[0]:
+                if best is not None:
+                    best[2].remove()
+                best = (score, bbox, ann)
+            else:
+                ann.remove()
 
-            ax.set_title("So sánh rủi ro và lợi suất")
-            ax.set_xlabel("Rủi ro năm (%)")
-            ax.set_ylabel("Lợi suất kỳ vọng năm (%)")
+        if best is not None:
+            placed.append(best[1])
 
 
-def _render_risk_return_figure(portfolio_results, target_return):
-    """Dựng lại biểu đồ Risk Return từ dữ liệu nguồn và luôn gắn tên danh mục."""
-    expected = _portfolio_expected_points(portfolio_results)
-    if not expected:
+def _render_target_chart(portfolio_results, target_return):
+    points = _portfolio_points(portfolio_results, include_target=False)
+    if not points:
         return
-
-    for fig_num in list(plt.get_fignums()):
-        fig = plt.figure(fig_num)
-        if _is_risk_return_figure(fig):
-            plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(11, 6))
-
-    for i, (name, risk, ret) in enumerate(expected):
-        ax.scatter(
-            risk * 100,
-            ret * 100,
-            s=110,
-            zorder=5,
-        )
-
-        offsets = [
-            (10, 10),
-            (10, -18),
-            (-10, 10),
-            (-10, -18),
-            (12, 20),
-        ]
-        dx, dy = offsets[i % len(offsets)]
-
-        ax.annotate(
-            name,
-            (risk * 100, ret * 100),
-            xytext=(dx, dy),
-            textcoords="offset points",
-            ha="left" if dx >= 0 else "right",
-            va="bottom" if dy >= 0 else "top",
-            fontsize=9,
-            bbox=dict(boxstyle="round,pad=0.25", alpha=0.8),
-            zorder=10,
-        )
-
+    fig, ax = plt.subplots(figsize=(12, 7))
+    for name, x, y in points:
+        ax.scatter(x, y, s=105, zorder=5)
+    _annotate_clean(ax, points)
     ax.axhline(
-        float(target_return) * 100,
+        float(target_return) * 100.0,
         linestyle="--",
-        linewidth=1.3,
+        linewidth=1.5,
         label=f"Mục tiêu {float(target_return):.1%}",
+        zorder=1,
     )
-
     ax.set_xlabel("Rủi ro năm (%)")
     ax.set_ylabel("Lợi suất kỳ vọng năm (%)")
-    ax.set_title("So sánh rủi ro và lợi suất")
-    ax.legend()
+    ax.set_title("Danh mục so với mục tiêu lợi nhuận")
+    ax.legend(loc="upper left")
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    plt.show()
+
+
+def _render_markowitz_chart(portfolio_results, frontier, target_return):
+    if not isinstance(frontier, pd.DataFrame) or frontier.empty:
+        return
+    if not {"Risk", "Return"}.issubset(frontier.columns):
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.plot(
+        pd.to_numeric(frontier["Risk"], errors="coerce") * 100.0,
+        pd.to_numeric(frontier["Return"], errors="coerce") * 100.0,
+        linewidth=2.2,
+        label="Đường biên Markowitz",
+        zorder=2,
+    )
+
+    points = _portfolio_points(portfolio_results, include_target=False)
+    for name, x, y in points:
+        ax.scatter(x, y, s=90, zorder=5)
+
+    target_points = _portfolio_points(portfolio_results, include_target=True)
+    target_point = next((p for p in target_points if p[0] == "Target Return"), None)
+    if target_point is not None:
+        _, tx, ty = target_point
+        ax.scatter(
+            tx, ty, s=190, marker="*",
+            label="Danh mục Markowitz theo mục tiêu",
+            zorder=7,
+        )
+
+    labels = points.copy()
+    if target_point is not None:
+        labels.append(target_point)
+    _annotate_clean(ax, labels, fontsize=9, duplicate_tolerance=0.25)
+
+    ax.axhline(
+        float(target_return) * 100.0,
+        linestyle="--",
+        linewidth=1.5,
+        label=f"Mục tiêu {float(target_return):.1%}",
+        zorder=1,
+    )
+    ax.set_xlabel("Rủi ro năm (%)")
+    ax.set_ylabel("Lợi suất kỳ vọng năm (%)")
+    ax.set_title("Đường biên Markowitz: lợi suất mục tiêu và rủi ro")
+    ax.legend(loc="upper left")
     ax.grid(alpha=0.25)
     fig.tight_layout()
     plt.show()
@@ -369,61 +396,38 @@ def _portfolio_name_from_title(title, names):
 
 
 def _clean_zero_weight_pies(portfolio_results, tickers=None):
-    """Loại cổ phiếu có tỷ trọng 0% khỏi pie chart nhưng không sửa dữ liệu gốc."""
     if not isinstance(portfolio_results, dict):
         return
-    preferred = [
-        "Naive",
-        "Minimum Variance",
-        "Optimal Risky",
-        "Maximum Return",
-        "Complete Portfolio",
-    ]
-    names = [name for name in preferred if name in portfolio_results]
+    names = [name for name in _PREFERRED_PORTFOLIOS if name in portfolio_results]
     tickers = list(tickers or [])
-
     for fig_num in plt.get_fignums():
         fig = plt.figure(fig_num)
         for ax in fig.axes:
-            wedges = [patch for patch in ax.patches if patch.__class__.__name__ == "Wedge"]
+            wedges = [p for p in ax.patches if p.__class__.__name__ == "Wedge"]
             if not wedges:
                 continue
-
-            title = ax.get_title()
-            portfolio_name = _portfolio_name_from_title(title, names)
-            if portfolio_name is None and len(names) == 1:
-                portfolio_name = names[0]
+            portfolio_name = _portfolio_name_from_title(ax.get_title(), names)
             if portfolio_name is None:
                 continue
-
             item = portfolio_results.get(portfolio_name)
-            if not isinstance(item, (tuple, list)) or len(item) < 1:
+            if not isinstance(item, (tuple, list)) or not item:
                 continue
             try:
                 weights = np.asarray(item[0], dtype=float).reshape(-1)
             except Exception:
                 continue
-            if len(weights) == 0:
-                continue
-
-            labels = tickers[:len(weights)] if tickers else []
+            labels = tickers[:len(weights)]
             zero_labels = {
                 str(labels[i]).strip()
                 for i, weight in enumerate(weights)
                 if i < len(labels) and np.isfinite(weight) and abs(weight) <= 1e-10
             }
-
-            if not zero_labels:
-                continue
-
             for wedge in list(wedges):
-                label = str(wedge.get_label()).strip()
-                if label in zero_labels:
+                if str(wedge.get_label()).strip() in zero_labels:
                     try:
                         wedge.remove()
                     except Exception:
                         pass
-
             for text in list(ax.texts):
                 if str(text.get_text()).strip() in zero_labels:
                     try:
@@ -431,16 +435,58 @@ def _clean_zero_weight_pies(portfolio_results, tickers=None):
                     except Exception:
                         pass
 
-            if portfolio_name:
-                ax.set_title(f"Phân bổ danh mục — {portfolio_name}")
+
+def _daily_risk_free_return(annual_rate):
+    try:
+        return (1.0 + float(annual_rate)) ** (1.0 / 252.0) - 1.0
+    except Exception:
+        return 0.0
 
 
-def _postprocess_portfolio_figures(portfolio_results, tickers=None):
-    _annotate_comparison_figures(portfolio_results)
-    _clean_zero_weight_pies(portfolio_results, tickers=tickers)
+def _portfolio_return_from_item(item, returns, risk_free_rate=0.0, name=None):
+    if item is None or not isinstance(item, (tuple, list)) or len(item) < 1:
+        return pd.Series(dtype=float)
+    raw_weights = item[0]
+    if raw_weights is None:
+        return pd.Series(dtype=float)
+    try:
+        w = np.asarray(raw_weights, dtype=float).reshape(-1)
+    except Exception:
+        return pd.Series(dtype=float)
+    if len(w) != returns.shape[1]:
+        return pd.Series(dtype=float)
+    asset_returns = returns.mul(w, axis=1).sum(axis=1)
+    if name == "Complete Portfolio":
+        risk_free_weight = max(1.0 - float(w.sum()), 0.0)
+        asset_returns = asset_returns + risk_free_weight * _daily_risk_free_return(risk_free_rate)
+    return pd.to_numeric(asset_returns, errors="coerce").dropna()
 
 
-def build_advanced_portfolio_analysis(returns, portfolio_returns, benchmark_returns=None, company_table=None, risk_free_rate=0.0, target_return=0.15):
+def _build_portfolio_returns(results):
+    returns = results.get("returns")
+    portfolio_results = results.get("portfolio_results", {})
+    rf = results.get("risk_free_rate", 0.0)
+    output = {}
+    if not isinstance(returns, pd.DataFrame) or returns.empty or not isinstance(portfolio_results, dict):
+        return output
+    for name, item in portfolio_results.items():
+        try:
+            series = _portfolio_return_from_item(item, returns, risk_free_rate=rf, name=name)
+            if not series.empty:
+                output[name] = series
+        except Exception:
+            continue
+    return output
+
+
+def build_advanced_portfolio_analysis(
+    returns,
+    portfolio_returns,
+    benchmark_returns=None,
+    company_table=None,
+    risk_free_rate=0.0,
+    target_return=0.15,
+):
     result = {}
     try:
         result["factor_proxy"] = factor_proxy_analysis(returns, company_table=company_table)
@@ -477,54 +523,18 @@ def build_advanced_portfolio_analysis(returns, portfolio_returns, benchmark_retu
     return result
 
 
-def _daily_risk_free_return(annual_rate):
-    try:
-        return (1.0 + float(annual_rate)) ** (1.0 / 252.0) - 1.0
-    except Exception:
-        return 0.0
-
-
-def _portfolio_return_from_item(item, returns, risk_free_rate=0.0, name=None):
-    if item is None or not isinstance(item, (tuple, list)) or len(item) < 1:
-        return pd.Series(dtype=float)
-    raw_weights = item[0]
-    if raw_weights is None:
-        return pd.Series(dtype=float)
-    try:
-        w = np.asarray(raw_weights, dtype=float).reshape(-1)
-    except Exception:
-        return pd.Series(dtype=float)
-    if len(w) != returns.shape[1]:
-        return pd.Series(dtype=float)
-    asset_returns = returns.mul(w, axis=1).sum(axis=1)
-    if name == "Complete Portfolio":
-        risk_free_weight = max(1.0 - float(w.sum()), 0.0)
-        asset_returns = asset_returns + risk_free_weight * _daily_risk_free_return(risk_free_rate)
-    return pd.to_numeric(asset_returns, errors="coerce").dropna()
-
-
-def _build_portfolio_returns(results):
-    returns = results.get("returns")
-    portfolio_results = results.get("portfolio_results", {})
-    risk_free_rate = results.get("risk_free_rate", 0.0)
-    portfolio_returns = {}
-    if not isinstance(returns, pd.DataFrame) or returns.empty or not isinstance(portfolio_results, dict):
-        return portfolio_returns
-    for name, item in portfolio_results.items():
-        try:
-            p_returns = _portfolio_return_from_item(item, returns, risk_free_rate=risk_free_rate, name=name)
-            if not p_returns.empty:
-                portfolio_returns[name] = p_returns
-        except Exception:
-            continue
-    return portfolio_returns
-
-
 def _run_all_advanced(returns, portfolio_returns, benchmark_returns, company_table, risk_free_rate, target_return):
     analyses = {}
     for name, p_returns in portfolio_returns.items():
         try:
-            analysis = build_advanced_portfolio_analysis(returns, p_returns, benchmark_returns, company_table, float(risk_free_rate), float(target_return))
+            analysis = build_advanced_portfolio_analysis(
+                returns,
+                p_returns,
+                benchmark_returns,
+                company_table,
+                float(risk_free_rate),
+                float(target_return),
+            )
             analysis["_portfolio_name"] = name
             analysis["_portfolio_returns"] = p_returns
             analysis["_data_frequency"] = "Ngày"
@@ -536,72 +546,74 @@ def _run_all_advanced(returns, portfolio_returns, benchmark_returns, company_tab
 
 def run_research(*args, **kwargs):
     global _LAST_RESULTS
-    results = _run_core_without_original_risk_return(*args, **kwargs)
+    results = _run_core_without_original_target_charts(*args, **kwargs)
     if not isinstance(results, dict):
         return results
 
     returns = results.get("returns")
-    rf = kwargs.get("risk_free_rate", results.get("risk_free_rate", 0.0))
-    target = kwargs.get("target_return", results.get("target_return", 0.15))
+    rf = float(kwargs.get("risk_free_rate", results.get("risk_free_rate", 0.0)))
+    target = float(kwargs.get("target_return", results.get("target_return", 0.15)))
 
-    # Cập nhật riêng doanh thu của ngân hàng theo Tổng thu nhập hoạt động.
     _refresh_bank_revenues(results)
 
-    # Dựng lại riêng biểu đồ Risk Return từ portfolio_results.
-    # Biểu đồ Risk Return gốc của core đã bị chặn ở _run_core_without_original_risk_return.
-    _render_risk_return_figure(
+    _render_target_chart(results.get("portfolio_results"), target)
+    _render_markowitz_chart(
         results.get("portfolio_results"),
+        results.get("efficient_frontier", results.get("frontier")),
         target,
     )
 
-    # Các biểu đồ khác chỉ được hậu xử lý, không thay đổi công thức tính.
-    _clean_zero_weight_pies(
-        results.get("portfolio_results"),
-        tickers=list(returns.columns) if isinstance(returns, pd.DataFrame) else kwargs.get("tickers", []),
-    )
+    if isinstance(returns, pd.DataFrame):
+        _clean_zero_weight_pies(
+            results.get("portfolio_results"),
+            tickers=list(returns.columns),
+        )
 
-    results["risk_free_rate"] = float(rf)
+    results["risk_free_rate"] = rf
     portfolio_returns = _build_portfolio_returns(results)
     results["portfolio_returns"] = portfolio_returns
-
     results["_advanced_source_returns"] = returns
     results["_advanced_source_benchmark_returns"] = results.get("benchmark_returns")
     results["_advanced_source_company_table"] = results.get("company_table")
 
-    all_advanced = _run_all_advanced(returns, portfolio_returns, results.get("benchmark_returns"), results.get("company_table"), float(rf), float(target))
+    all_advanced = _run_all_advanced(
+        returns,
+        portfolio_returns,
+        results.get("benchmark_returns"),
+        results.get("company_table"),
+        rf,
+        target,
+    ) if isinstance(returns, pd.DataFrame) else {}
     results["advanced_portfolio_analysis_by_portfolio"] = all_advanced
 
     requested_name = kwargs.get("advanced_portfolio_name")
-    if requested_name in all_advanced and not all_advanced[requested_name].get("error"):
-        selected_name = requested_name
-    elif "Complete Portfolio" in all_advanced and not all_advanced["Complete Portfolio"].get("error"):
-        selected_name = "Complete Portfolio"
-    elif "Optimal Risky" in all_advanced and not all_advanced["Optimal Risky"].get("error"):
-        selected_name = "Optimal Risky"
-    elif "Minimum Variance" in all_advanced and not all_advanced["Minimum Variance"].get("error"):
-        selected_name = "Minimum Variance"
-    elif all_advanced:
+    selected_name = None
+    for candidate in [requested_name, "Complete Portfolio", "Optimal Risky", "Minimum Variance"]:
+        if candidate in all_advanced and not all_advanced[candidate].get("error"):
+            selected_name = candidate
+            break
+    if selected_name is None and all_advanced:
         selected_name = next(iter(all_advanced))
-    else:
-        selected_name = None
 
     if selected_name is not None:
-        selected_analysis = dict(all_advanced[selected_name])
-        selected_analysis["_portfolio_name"] = selected_name
-        selected_analysis["_target_return"] = float(target)
-        selected_analysis["_risk_profile"] = kwargs.get("risk_profile")
-        selected_analysis["_all_portfolios"] = all_advanced
-        results["advanced_portfolio_analysis"] = selected_analysis
+        selected = dict(all_advanced[selected_name])
+        selected["_portfolio_name"] = selected_name
+        selected["_target_return"] = target
+        selected["_risk_profile"] = kwargs.get("risk_profile")
+        selected["_all_portfolios"] = all_advanced
+        results["advanced_portfolio_analysis"] = selected
         results["advanced_portfolio_name"] = selected_name
     else:
         results["advanced_portfolio_analysis"] = {}
         results["advanced_portfolio_analysis_error"] = "Không có danh mục hợp lệ để đánh giá."
+
     _LAST_RESULTS = results
     return results
 
 
 def get_last_results():
     return _LAST_RESULTS
+
 
 run_advanced_portfolio_analysis = build_advanced_portfolio_analysis
 configure_vnstock = _core.configure_vnstock
