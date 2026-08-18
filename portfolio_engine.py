@@ -168,6 +168,19 @@ _PREFERRED_PORTFOLIOS = [
     "Complete Portfolio",
 ]
 
+_CHART_NAMES = {
+    "Naive": "Danh mục đồng đều",
+    "Minimum Variance": "Phương sai tối thiểu",
+    "Optimal Risky": "Danh mục rủi ro tối ưu",
+    "Maximum Return": "Lợi suất tối đa",
+    "Complete Portfolio": "Danh mục hoàn chỉnh",
+    "Target Return": "Danh mục theo mục tiêu",
+}
+
+
+def _chart_name(name):
+    return _CHART_NAMES.get(name, str(name))
+
 
 def _is_filtered_chart(fig):
     if fig is None:
@@ -277,7 +290,7 @@ def _annotate_clean(ax, points, fontsize=9, duplicate_tolerance=0.20):
         best = None
         for dx, dy in local_candidates:
             ann = ax.annotate(
-                name,
+                _chart_name(name),
                 (x, y),
                 xytext=(dx, dy),
                 textcoords="offset points",
@@ -298,7 +311,7 @@ def _annotate_clean(ax, points, fontsize=9, duplicate_tolerance=0.20):
             outside = (
                 max(0.0, fig.bbox.x0 - bbox.x0)
                 + max(0.0, bbox.x1 - fig.bbox.x1)
-                + max(0.0, fig.bbox.y0 - bbox.y0)
+                + max(0.0, fig.bbox.y0 - bbox.y1)
                 + max(0.0, bbox.y1 - fig.bbox.y1)
             )
             score = overlap * 1000.0 + outside * 1000.0 + 0.01 * (dx * dx + dy * dy)
