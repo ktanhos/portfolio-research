@@ -311,7 +311,7 @@ def _annotate_clean(ax, points, fontsize=9, duplicate_tolerance=0.20):
             outside = (
                 max(0.0, fig.bbox.x0 - bbox.x0)
                 + max(0.0, bbox.x1 - fig.bbox.x1)
-                + max(0.0, fig.bbox.y0 - bbox.y1)
+                + max(0.0, fig.bbox.y0 - bbox.y0)
                 + max(0.0, bbox.y1 - fig.bbox.y1)
             )
             score = overlap * 1000.0 + outside * 1000.0 + 0.01 * (dx * dx + dy * dy)
